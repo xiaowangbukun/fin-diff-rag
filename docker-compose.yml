@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: finrag-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: finrag
+      POSTGRES_USER: finrag
+      POSTGRES_PASSWORD: Fin@Rag2026
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finrag -d finrag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # 部署基线约束（单机 4C8G，见 README「部署基线」）：给数据库设资源上限，
+    # 防止 PostgreSQL 在语料导入/大批量向量检索时吃满内存，把同机运行的
+    # 后端服务与 embedding/LLM 代理挤出去。limits 由 docker compose（V2+）
+    # 在非 swarm 模式下同样生效。
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+        reservations:
+          memory: 256m
+
+volumes:
+  pgdata:

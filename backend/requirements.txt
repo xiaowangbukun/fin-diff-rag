@@ -1,0 +1,33 @@
+fastapi>=0.110
+uvicorn>=0.27
+sqlalchemy>=2.0
+pydantic>=2.6
+PyJWT>=2.8
+# 闭环项 3 · S3：TOTP 密钥静态加密（Fernet）与 OIDC id_token 验签
+# （RS/ES 算法）。此前它只作为 PyJWT 的间接依赖出现在锁文件里，现在
+# 代码直接 import，必须显式声明——否则裁剪依赖时会被悄悄移除。
+cryptography>=42.0
+python-multipart>=0.0.9
+httpx>=0.26
+# REPORT_TZ 时区化（监控日报/指标按当地自然日分桶）依赖 IANA 时区数据库：
+# Linux/macOS 用系统 zoneinfo，Windows 没有系统库，必须装本包，
+# 否则 REPORT_TZ 无法识别并告警回落 UTC（日报口径退回旧行为）。
+tzdata>=2024.1
+pypdf>=4.0
+python-docx>=1.1
+openpyxl>=3.1
+psycopg[binary]>=3.1
+pgvector>=0.2.5
+# P1 PDF 解析加固：表格结构化 / 多栏阅读顺序 / 渲染（OCR 前置）
+pdfplumber>=0.11
+pypdfium2>=4.30
+# P1 扫描件 OCR（体积较大，内网可按需裁剪；缺失时自动降级为明确拒绝）
+rapidocr-onnxruntime>=1.2.3
+# --------------------------------------------------------------------------
+# P2-11 单元测试体系：pytest 套件位于 backend/tests，配置见 backend/pytest.ini
+# 说明：
+#   · 只依赖 pytest 本体（无第三方插件），保证内网离线镜像可装；
+#   · tests/conftest.py 会把 DATA_DIR / DATABASE_URL 重定向到临时目录，
+#     单元测试全程不触碰 backend/data/finrag.db；
+#   · 端到端仍走 backend/smoke.py（需服务在 8000 端口），与 pytest 互不替代。
+pytest>=8.0

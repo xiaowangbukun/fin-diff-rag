@@ -1,0 +1,65 @@
+{
+  "_comment": "第三方许可 override 表：只收录'本机 importlib.metadata 读不到（未安装）'或 'lock 未写许可'的包。每条必须带 verified_from（来源+日期）。新增条目后必须重跑 scripts/generate_third_party_notices.py。key 大小写不敏感（脚本按 PEP 503 规范化后匹配）。",
+  "packages": {
+    "flatbuffers": {
+      "license": "Apache-2.0",
+      "verified_from": "PyPI flatbuffers 25.12.19 JSON API（与锁文件版本一致）, 2026-10-20",
+      "note": "本机未安装，无法读 metadata；锁文件固定 25.12.19"
+    },
+    "numpy": {
+      "license": "BSD-3-Clause",
+      "verified_from": "PyPI numpy 2.5.4 JSON API + numpy.org 许可页, 2026-10-20",
+      "note": "本机未安装；wheel 另内置 OpenBLAS（BSD-3-Clause）与 GCC runtime（GPL-3.0-with-GCC-exception，例外条款允许随二进制分发）"
+    },
+    "onnxruntime": {
+      "license": "MIT",
+      "verified_from": "PyPI onnxruntime JSON API, 2026-10-20",
+      "note": "本机未安装，无法读 metadata"
+    },
+    "opencv-python": {
+      "license": "Apache-2.0",
+      "verified_from": "PyPI opencv-python 5.0.0.93 JSON API（与锁文件版本一致，且为当前最新版）, 2026-10-20",
+      "note": "本机未安装；注意 OpenCV 库本体 Apache-2.0，打包脚本 MIT，非免费算法（SURF 等）未随 wheel 提供"
+    },
+    "protobuf": {
+      "license": "BSD-3-Clause",
+      "verified_from": "PyPI protobuf 7.36.2 JSON API（与锁文件版本一致）, 2026-10-20",
+      "note": "本机未安装，无法读 metadata"
+    },
+    "psycopg": {
+      "license": "LGPL-3.0-only",
+      "verified_from": "PyPI psycopg 3.3.6 JSON API（license_expression=LGPL-3.0-only，与锁文件版本一致）, 2026-10-20",
+      "note": "本机未安装；LGPL 弱传染，与 Apache-2.0 分发兼容（随附许可文本即可，详见 THIRD-PARTY-NOTICES.md 传染性许可提示段）"
+    },
+    "psycopg-binary": {
+      "license": "LGPL-3.0-only",
+      "verified_from": "PyPI psycopg-binary 3.3.6 JSON API（license_expression=LGPL-3.0-only，与锁文件版本一致）, 2026-10-20",
+      "note": "本机未安装；由 requirements.txt 的 psycopg[binary] extra 拉入"
+    },
+    "pyclipper": {
+      "license": "MIT",
+      "verified_from": "PyPI pyclipper JSON API, 2026-10-20",
+      "note": "本机未安装；Python 包装层 MIT，内嵌 Clipper C++ 核心库为 Boost Software License（均允许商用）"
+    },
+    "PyYAML": {
+      "license": "MIT",
+      "verified_from": "PyPI PyYAML JSON API, 2026-10-20",
+      "note": "本机未安装，无法读 metadata"
+    },
+    "rapidocr-onnxruntime": {
+      "license": "Apache-2.0",
+      "verified_from": "PyPI rapidocr-onnxruntime 1.2.3 JSON API（与锁文件版本一致）, 2026-10-20",
+      "note": "本机未安装；RapidOCR 项目 Apache-2.0"
+    },
+    "shapely": {
+      "license": "BSD-3-Clause",
+      "verified_from": "PyPI shapely 2.2.0 + shapely.readthedocs.io 许可页（与锁文件版本一致）, 2026-10-20",
+      "note": "本机未安装；wheel 内嵌 GEOS 库为 LGPL-2.1（弱传染，随附许可文本即可）"
+    },
+    "six": {
+      "license": "MIT",
+      "verified_from": "PyPI six JSON API, 2026-10-20",
+      "note": "本机未安装，无法读 metadata"
+    }
+  }
+}

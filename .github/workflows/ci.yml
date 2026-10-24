@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI：每次 push / PR 跑「单元测试 + 前端构建」两道闸。
+#
+# 为什么必须进 CI（而不是只在本地跑）：
+#   · 本项目的安全断言密度很高（越权 404、切片级密级、防拼图、审计链、
+#     首登改密、MFA/恢复码、OIDC 校验分支）——任何一次"顺手改动"都可能
+#     让某条断言失效，而人眼 review 抓不住 697 条断言里的回归；
+#   · 测试依赖真实 PostgreSQL + pgvector（#21 后 SQLite 降级链路已移除），
+#     所以用 service 容器起 pgvector/pgvector:pg16，与生产同引擎同扩展。
+name: ci
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧运行：省额度，且避免旧提交结果干扰判断。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend tests (pytest + PostgreSQL 16 + pgvector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: finrag
+          POSTGRES_PASSWORD: Fin@Rag2026
+          POSTGRES_DB: finrag_test
+        ports: [ '5432:5432' ]
+        options: >-
+          --health-cmd "pg_isready -U finrag -d finrag_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # conftest.py 用 setdefault 读取：CI 注入优先于本机默认值。
+      # 口令含 '@'，连接串里必须 URL-encode（square brackets 会被 GH 展开，
+      # 所以这里用字符串拼接而不是表达式）。
+      DATABASE_URL: postgresql+psycopg://finrag:Fin%40Rag2026@127.0.0.1:5432/finrag_test
+      # 强制离线确定性：不调远端 LLM/embedding，向量由 conftest 的替身供给。
+      LLM_API_KEY: ''
+      EMBED_API_KEY: ''
+      EMBED_REQUIRE_API_KEY: 'false'
+      EMBED_DIM: '24'
+      PII_NER_URL: ''
+      JWT_SECRET: ci-fixed-jwt-secret-0123456789abcdef
+      # CI 上多 worker 计数/锚点都用默认配置：db 后端随 DATABASE_URL 生效，
+      # 正好在流水线里覆盖"跨 worker 共享"这一路径。
+      AUDIT_ANCHOR_EXTERNAL_FILE: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Enable pgvector extension
+        env:
+          PGPASSWORD: Fin@Rag2026
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          psql -h 127.0.0.1 -U finrag -d finrag_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Import sanity (fail fast on syntax/import errors)
+        working-directory: backend
+        run: python -m compileall -q app && python -c "import app.main, app.recovery, app.anchors"
+
+      - name: pytest
+        working-directory: backend
+        run: python -m pytest -q --tb=short
+
+  frontend:
+    name: frontend build (vite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+      - name: Upload dist (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7

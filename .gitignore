@@ -1,0 +1,19 @@
+# 运行时产物（不入库）
+backend/.smoke/
+backend/.smoke_*/
+backend/data/
+backend/reports/
+backend/.pytest_cache/
+backend/.httpcheck.txt
+backend/.killport.txt
+backend/.smoke_report.txt
+**/__pycache__/
+*.pyc
+
+# 本地环境
+.venv/
+node_modules/
+frontend/dist/
+
+# 本地配置（含密钥，只提交 .env.example）
+.env
