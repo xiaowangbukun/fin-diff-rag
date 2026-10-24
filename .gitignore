@@ -15,5 +15,11 @@ backend/.smoke_report.txt
 node_modules/
 frontend/dist/
 
+# 构建/安装日志（排查用，不入库）
+*.log
+frontend/build_log*.txt
+frontend/.build_log*.txt
+frontend/install_log.txt
+
 # 本地配置（含密钥，只提交 .env.example）
 .env

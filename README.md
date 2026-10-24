@@ -368,7 +368,7 @@ RAG_BASE=http://127.0.0.1:8010 OIDC_ISSUER=http://127.0.0.1:9110 \
 # 接真实 Keycloak / Azure AD 时只换 OIDC_ISSUER/CLIENT_* 与 IDP_USER/PASSWORD，命令不变
 ```
 
-`http_check.py` 是纯客户端，不自己起服务，且它的夹具要直连库（进程里必须有 `DATABASE_URL`）——用 `run_httpcheck.py` 包一层原样执行，别直接裸跑。离线验证（无真实 `EMBED_API_KEY`）用配套启动器，它在 uvicorn 导入 app 前装好确定性 fake embedder，无需 Key 也能起服务：
+`http_check.py` 是纯客户端，不自己起服务，且它的夹具要直连库（进程里必须有 `DATABASE_URL`）——用 `run_httpcheck.py` 包一层原样执行，别直接裸跑；包装器按「进程环境变量 → `backend/.env` → `finrag_smoke` 兜底」取连接串，**必须与服务端同库**，否则 `reset_ledger()` 清的是另一个库，混合密级那条全文读取断言会被上一轮的 429 污染。离线验证（无真实 `EMBED_API_KEY`）用配套启动器，它在 uvicorn 导入 app 前装好确定性 fake embedder，无需 Key 也能起服务：
 
 ```bash
 # Windows：先起服务，再跑断言，跑完回收端口
@@ -378,6 +378,16 @@ python killport.py
 ```
 
 配了真实 `EMBED_API_KEY` 时按「三、快速开始」正常启动即可，不需要 fake。
+
+### CI（GitHub Actions）
+
+`.github/workflows/ci.yml` 在每次 push / PR 上跑两道闸，**不需要任何自建 runner 或外部服务**：
+
+- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（746 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
+- **frontend**：Node 20，`npm ci || npm install` 后 `vite build`，产物作为 artifact 保留 7 天。
+- 同一分支新推送会取消旧运行（`concurrency`）；测试只需 PostgreSQL，所以**自建 Gitea/GitLab CI 也照这个顺序抄**：起 PG 16 + pgvector → 建扩展 → 装 `requirements.txt` → `pytest` → `npm run build`。
+
+CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requirements-lock.txt` 是在同版本上生成的精确版本口径。
 
 `http_check.py` 自带夹具重置（清空拼图账本 + 删除历次遗留的同名测试样本集），因此**可反复执行且结果稳定**——持久库上重复跑不会因累积的限流状态或重复样本稀释覆盖率而误报。
 

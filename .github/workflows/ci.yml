@@ -3,8 +3,9 @@
 #
 # 为什么必须进 CI（而不是只在本地跑）：
 #   · 本项目的安全断言密度很高（越权 404、切片级密级、防拼图、审计链、
-#     首登改密、MFA/恢复码、OIDC 校验分支）——任何一次"顺手改动"都可能
-#     让某条断言失效，而人眼 review 抓不住 697 条断言里的回归；
+#     首登改密、MFA/恢复码、OIDC 校验分支、审计锚点外置、跨 worker 登录计数）——
+#     任何一次"顺手改动"都可能让某条断言失效，而人眼 review 抓不住 746 条
+#     断言里的回归；
 #   · 测试依赖真实 PostgreSQL + pgvector（#21 后 SQLite 降级链路已移除），
 #     所以用 service 容器起 pgvector/pgvector:pg16，与生产同引擎同扩展。
 name: ci
@@ -61,7 +62,9 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # 与 README 基线（requirements-lock.txt 生成于 3.13）保持一致：
+          # 3.13 才有 onnxruntime 等依赖的完整 wheel 覆盖。
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
