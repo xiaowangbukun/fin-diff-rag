@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """OIDC 对接的**真实 HTTP** 集成测试（不打桩协议函数）。
 
 与 test_mfa_auth.py 的分工：

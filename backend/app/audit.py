@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """审计日志：全链路留痕，越权与脱敏行为必须可追溯。
 
 P0-2 防篡改（三层，对应三种攻击）：

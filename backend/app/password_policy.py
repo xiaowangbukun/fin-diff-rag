@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """口令强度策略：唯一的校验入口，登录改密与管理员设密共用同一口径。
 
 为什么把策略从"长度 ≥8"抬到"12 位 + 三类字符"：

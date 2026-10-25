@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """migrate.py —— document_versions 唯一约束的旧库升级路径（B3 验收）。
 
 覆盖三层：

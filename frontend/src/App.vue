@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div v-if="!user" class="full"><router-view /></div>
   <el-container v-else class="layout">

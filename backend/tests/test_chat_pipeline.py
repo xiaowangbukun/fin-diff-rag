@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """routers/chat.py —— 问答主链路的安全契约（此前仅 1 条长度校验用例碰过）。
 
 各安全组件（intent / retrieve / jigsaw / pii / injection / audit）都有各自的

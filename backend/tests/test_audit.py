@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """audit.py —— 审计哈希链单元测试（防篡改三层 + 异步写入）。
 
 链的定义：row_hash = sha256(prev_hash + "|" + canonical(业务字段))。

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """运维监控日报（P2-12）：按自然日聚合审计日志与库内状态，只读产出。
 
 为什么只读：日报本身不该往审计链里写东西。写一行"生成了日报"的审计，

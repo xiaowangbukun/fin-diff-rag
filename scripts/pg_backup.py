@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """P0-6：PostgreSQL 逻辑备份 / 校验 / 恢复（一次跑完的可执行 runbook）。
 
 为什么必须有脚本而不是"运维记得手敲 pg_dump"：

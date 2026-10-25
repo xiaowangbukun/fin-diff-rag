@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """intent.py —— 前置意图识别网关（此前零覆盖）。
 
 网关是"拼图式诱导套取"的第一道门：danger 档直接物理阻断，不进检索链路。

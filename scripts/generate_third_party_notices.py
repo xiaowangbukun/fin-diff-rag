@@ -327,8 +327,9 @@ def render_copyleft_section(backend_rows, frontend_rows) -> str:
     parts = []
     parts.append("## 传染性许可提示（Copyleft 提示）\n")
     parts.append(
-        "以下条目含弱传染（文件级/库级）许可，**均与 Apache-2.0 兼容**："
-        "随分发提供对应许可文本即可，**不需要**开放本项目源码；但不得删除/修改其随附许可声明。\n"
+        "以下条目含弱传染（文件级/库级）许可，**均与 AGPL-3.0 兼容**"
+        "（MPL-2.0 §3.3 明列 AGPL 为次级许可；LGPL-3.0 可升级为 GPL-3.0，再经 GPL-3.0 §13 与 AGPL 组合）："
+        "随分发提供对应许可文本即可，**不需要**为本项目开源；但不得删除/修改其随附许可声明。\n"
     )
     if weak:
         parts.append("| Package | License | 传染性说明 |")
@@ -364,7 +365,9 @@ def render_copyleft_section(backend_rows, frontend_rows) -> str:
 
     parts.append("### 强传染许可红线\n")
     parts.append(
-        "**若将来引入 GPL / AGPL / SSPL / COMMERCIAL 类许可，或出现 `UNKNOWN-需人工核验` 条目，"
+        "**本项目自身以 AGPL-3.0 发布：引入 GPL-3.0 / AGPL-3.0 依赖在法律上可组合"
+        "（GPL-3.0 §13、AGPL-3.0 §13），但仍须在清单中登记；"
+        "若引入 GPL-2.0-only / SSPL / COMMERCIAL 类许可，或出现 `UNKNOWN-需人工核验` 条目，"
         "必须先经法务评审通过，方可进入分发/交付流程。**\n"
     )
     if strong:

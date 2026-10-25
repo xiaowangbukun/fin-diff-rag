@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """权限变更审批流（P2-9 密级；上线闭环：访问范围 / 显式授权 / 账号权限）。
 
 统一威胁模型：**任何"放宽可见范围"的变更都必须由申请人之外的人复核**。

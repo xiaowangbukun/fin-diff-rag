@@ -9,7 +9,7 @@
 | 生成命令 | `D:/workspace/python/python.exe scripts/generate_third_party_notices.py`（在仓库根目录执行；脚本路径按自身位置解析，不依赖 cwd） |
 | 数据来源 | 后端：`backend/requirements-lock.txt`（56 个固定版本包）+ `backend/requirements.txt`（声明口径差额核对）；前端：`frontend/package-lock.json`（npm lockfileVersion 3，128 个包） |
 | 许可解析口径 | 后端：本机 `importlib.metadata`（License-Expression → License 自由文本 → License 分类器），本机未装/无许可字段时查 `scripts/third_party_licenses.json` override 表；前端：lock 条目 `license` 字段 → `frontend/node_modules/<pkg>/package.json` → override 表 |
-| 生成时间 | 2026-10-25 01:53:54 +0800（本机时区） |
+| 生成时间 | 2026-10-25 15:17:45 +0800（本机时区） |
 | 必须重跑本脚本的时机 | ① 升级/更换任何依赖后；② 修改 `backend/requirements-lock.txt`、`backend/requirements.txt`、`frontend/package-lock.json` 任一后；③ 切换 Python 版本或操作系统后（本机 metadata 口径会变）；④ 更新 `scripts/third_party_licenses.json` 后。依赖未变时重跑，除“生成时间”行外输出应完全一致 |
 | 异常许可计数 | 弱传染（MPL/LGPL 等）：3 条；强传染/商业/未知（GPL/AGPL/SSPL/COMMERCIAL/UNKNOWN）：0 条 |
 
@@ -221,7 +221,7 @@
 
 ## 传染性许可提示（Copyleft 提示）
 
-以下条目含弱传染（文件级/库级）许可，**均与 Apache-2.0 兼容**：随分发提供对应许可文本即可，**不需要**开放本项目源码；但不得删除/修改其随附许可声明。
+以下条目含弱传染（文件级/库级）许可，**均与 AGPL-3.0 兼容**（MPL-2.0 §3.3 明列 AGPL 为次级许可；LGPL-3.0 可升级为 GPL-3.0，再经 GPL-3.0 §13 与 AGPL 组合）：随分发提供对应许可文本即可，**不需要**为本项目开源；但不得删除/修改其随附许可声明。
 
 | Package | License | 传染性说明 |
 | --- | --- | --- |
@@ -237,7 +237,7 @@
 
 ### 强传染许可红线
 
-**若将来引入 GPL / AGPL / SSPL / COMMERCIAL 类许可，或出现 `UNKNOWN-需人工核验` 条目，必须先经法务评审通过，方可进入分发/交付流程。**
+**本项目自身以 AGPL-3.0 发布：引入 GPL-3.0 / AGPL-3.0 依赖在法律上可组合（GPL-3.0 §13、AGPL-3.0 §13），但仍须在清单中登记；若引入 GPL-2.0-only / SSPL / COMMERCIAL 类许可，或出现 `UNKNOWN-需人工核验` 条目，必须先经法务评审通过，方可进入分发/交付流程。**
 
 本清单生成时**未检出** GPL / AGPL / SSPL / COMMERCIAL / UNKNOWN 条目（逐表见上）。
 

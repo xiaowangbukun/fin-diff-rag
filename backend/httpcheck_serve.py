@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """http_check 的配套服务启动器（#21 PG-only 迁移配套）。
 
 为什么需要它：http_check 断言的对象是"真实运行中的服务"（非 TestClient，

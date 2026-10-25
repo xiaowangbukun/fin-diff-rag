@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """P0-6：审计日志留存归档（合规留存 ≥6 个月，且归档副本可独立取证）。
 
 分工（与 P0-3 外置副本互补）：

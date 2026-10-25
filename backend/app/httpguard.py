@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """部署边界中间件（P0-2）：TLS 跳转 / 浏览器安全头 / Host 校验 / CORS 白名单。
 
 为什么这些必须写在应用里，而不是只写在 Nginx 配置里：

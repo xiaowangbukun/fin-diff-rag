@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """TOTP（RFC 6238）实现与密钥静态加密。
 
 为什么自己实现而不引第三方库：算法只有 HMAC-SHA1 + 动态截断两段，标准

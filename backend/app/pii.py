@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """敏感信息识别与脱敏。
 
 P1-5 扩展：在身份证/银行卡/手机号/邮箱/统一社会信用代码之外，新增
@@ -50,7 +50,7 @@ class Hit:
 
 
 def _compile_extra(raw: str) -> list[tuple[str, re.Pattern]]:
-    """解析 PII_EXTRA_PATTERNS（JSON 数组），启动时追加到 PATTERNS 尾部。
+    r"""解析 PII_EXTRA_PATTERNS（JSON 数组），启动时追加到 PATTERNS 尾部。
 
     支持两种条目：纯正则字符串（类型名记"自定义敏感信息"），或
     {"kind": "类型名", "pattern": "正则"}。JSON 里反斜杠必须双写

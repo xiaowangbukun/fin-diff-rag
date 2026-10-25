@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """approval.py —— 密级变更审批流单元测试（P2-9）。
 
 降密 = 把原本受限的内容开放出去，是**不可逆**的信息外流，必须走：

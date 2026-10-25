@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """policy.py —— 权限引擎单元测试。
 
 判定顺序是「密级硬门槛 → deny → ACL 模式 → 临时授权存活期」，

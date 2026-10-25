@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """HTTP 错误语义：下游不可用统一 503，未捕获异常仍 500。
 
 设计口径（与 README「HTTP 错误语义」一节一一对应）：

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """retrieve.py —— 检索出口的越权/泄密防线（此前零覆盖）。
 
 为什么必须先补这一块：retrieve.py 是"内容离开数据库"的唯一出口，

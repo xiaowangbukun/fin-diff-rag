@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """0001 基线：把"当前模型 + 历史补列"一次性收口成可版本化的起点。
 
 Revision ID: 0001_baseline

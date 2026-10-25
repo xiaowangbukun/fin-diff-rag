@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """migrate.py —— SCHEMA_PATCHES 的旧库升级与幂等（pytest 侧此前零覆盖）。
 
 #21 后存储只剩 PG，启动期补列走的全是 PG 分支。此前这条路径只有 smoke

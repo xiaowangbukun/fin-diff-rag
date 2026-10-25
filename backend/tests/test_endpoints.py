@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """routers/admin.py / routers/docs.py 的端点守卫（此前端点级零覆盖）。
 
 组件逻辑各自有单测，但"谁能调这个端点"此前没人验过——而权限判断恰好写在

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """登录防爆破单测（#11）：窗口计数 / 锁定 / 自愈 / 隔离 / 审计留痕。
 
 口径要点（与实现一一对应）：

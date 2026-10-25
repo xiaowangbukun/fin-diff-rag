@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """审计只追加 + 全量外送（P0-3）：把"证据"从"约定"变成"数据库拒绝 + 独立副本"。
 
 两个缺口各自的补法：

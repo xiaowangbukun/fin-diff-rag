@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """pgvector 向量索引保障（P1-6）。
 
 为什么需要它：pgvector 没索引时走全表精确扫描，切片量上万后延迟不可接受。

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """TOTP 原语测试：RFC 6238 官方向量 + 重放防护 + 密钥静态加密。"""
 import base64
 

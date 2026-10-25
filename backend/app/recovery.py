@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """一次性恢复码（备用码）：TOTP 绑定的自助恢复通道。
 
 定位：手机丢失/换机时，用户不必等管理员重置就能登录一次，然后在安全

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """smoke 专用确定性词袋 embedder 替身（#21 PG-only 迁移配套）。
 
 #21 把本地哈希向量通道随 SQLite 降级链路一并移除后，无 EMBED_API_KEY 时

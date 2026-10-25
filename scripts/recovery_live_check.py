@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """一次性恢复码的**活服务**实测：对新起的真实进程跑完整绑定/使用/重生成/重置链路。
 
 与 pytest 的分工：

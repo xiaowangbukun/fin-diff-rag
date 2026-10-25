@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <div class="card">
     <div class="page-title">安全设置 · 动态口令（TOTP）</div>

@@ -1,6 +1,6 @@
 ﻿﻿# 金融企业级 RAG 知识库（全链路权限防泄密）
 
-> 本项目基于 [Apache License 2.0](LICENSE) 发布
+> 本项目基于 [GNU Affero 通用公共许可证 v3.0（AGPL-3.0-only）](LICENSE) 发布：可自由使用、修改、自建，**改造后对外提供网络服务须以 AGPL 开放对应源码**；商业闭源交付需另行取得商业授权（见「十二、许可证与商用」）。
 
 面向金融机构的检索增强问答系统。核心不是"能不能答出来"，而是**该看的能看到、不该看的永远出不去**——从文档入库、切片、建索引、检索、上下文装配、生成到出库，每个环节都带权限校验与审计留痕。
 
@@ -298,7 +298,7 @@ npm run build    # 产出 dist/，后端会自动托管，直接访问 8000 即�
 10. **审计强化（P0-3）**：`AUDIT_APPEND_ONLY=true`（DB 触发器拒绝改/删审计行）、`AUDIT_SHIP_ROWS=true`（每批审计行副本外送）。上线后确认 `GET /api/admin/audit/verify` 的 `ok=true`、`GET /api/admin/audit/anchor` 的 `row_copies` 随业务增长，且 `bad_signature=0`。**换过 `AUDIT_ANCHOR_HMAC_KEY` 后**，旧记录会显示为 `stale_key_records>0`（指纹不同、不可验证但可解释），新增记录仍应 `bad_signature=0`；巡检响应里的 `key_id` 是当前密钥指纹，用它区分"密钥轮换"与"记录被伪造"。
 11. **升级与灾备（P0-6）**：发布顺序固定为"备份 → `alembic upgrade head` → 前端构建 → 启服务"，详见 [`docs/BACKUP-RESTORE.md`](docs/BACKUP-RESTORE.md)；上线前必须完成**一次**恢复演练（`scripts/pg_backup.py restore` 到独立库并跑 `smoke.py`）并留记录。
 12. **巡检手段**：`GET /api/health` 的 `jwt_secret` 字段为 `configured` / `ephemeral`——脚本可断言其不为 `ephemeral`；`embed_mode` 应为 `api` 而非 `local`。
-13. **第三方许可**：`THIRD-PARTY-NOTICES.md`（仓库根，`python scripts/generate_third_party_notices.py` 生成）——升级任何依赖后必须重跑；已知传染性许可 certifi（MPL-2.0）/ psycopg（LGPL-3.0）均与 Apache-2.0 兼容，随分发提供许可文本即可。本轮新增 alembic（MIT，含 Mako/MarkupSafe 依赖），生成脚本会一并覆盖。
+13. **第三方许可**：`THIRD-PARTY-NOTICES.md`（仓库根，`python scripts/generate_third_party_notices.py` 生成）——升级任何依赖后必须重跑；已知传染性许可 certifi（MPL-2.0）/ psycopg（LGPL-3.0）均与 AGPL-3.0 兼容（MPL-2.0 §3.3 明列 AGPL 为次级许可；LGPL-3.0 可升级为 GPL-3.0，再由 GPL-3.0 §13 与 AGPL 组合），随分发提供许可文本即可，不需要为此开源本项目。本轮新增 alembic（MIT，含 Mako/MarkupSafe 依赖），生成脚本会一并覆盖。
 
 ## 三之三、离线安装（内网无外网环境）
 
@@ -662,3 +662,28 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 - **Windows 必须安装 `tzdata` 包**（已列入 `requirements.txt`）：Windows 没有系统 IANA 时区数据库，缺包时任何时区名都无法识别，只能走 UTC 兜底。Linux/macOS 用系统 zoneinfo，无需此包。
 
 变更说明：默认时区从 UTC 改为 `Asia/Shanghai` 后，日报边界较旧行为平移 8 小时——这是刻意修正（旧行为对中国用户就是错的），历史已生成的日报内容不受影响（都是当日快照）。
+
+---
+
+## 十二、许可证与商用（AGPL-3.0）
+
+本项目以 **GNU Affero 通用公共许可证第 3 版（`AGPL-3.0-only`）** 发布，全文见仓库根 [`LICENSE`](LICENSE)；所有源文件头统一标注 `SPDX-License-Identifier: AGPL-3.0-only`，前端 `package.json` 的 `license` 字段同为 `AGPL-3.0-only`。
+
+**一句话**：自用、改造、自建都免费；**只要你把改造后的版本通过网络对外提供服务，就必须把对应源码同样以 AGPL 开放**；想闭源商用，只能另行取得商业授权。
+
+| 使用情形 | 需要履行的义务 |
+|---|---|
+| 内部自用（含内部二次开发），不向外部网络用户提供服务 | 无需对外公开源码；保留版权与许可声明即可 |
+| 改造后部署为对外服务（SaaS / 在线问答 / 对外门户） | 向这些用户提供**完整对应源码**（含你的修改），且继续以 AGPL-3.0 授权（第 13 条：远程网络交互） |
+| 分发源码、镜像或整包交付 | 随附 `LICENSE` 与对应源码；保留版权声明；**标注你修改过的文件** |
+| 商业交付但不开放你的改造（OEM / 私有化闭源项目） | 须另行取得**商业授权**（双许可）；联系项目所有者 |
+
+**为什么从 Apache-2.0 换成 AGPL-3.0**：本项目的核心资产是「权限防泄密 + 审计链」的实现，Apache-2.0 允许任何人拿去做闭源 SaaS 且不回馈上游；AGPL-3.0 把"通过网络提供服务"也纳入分发语义，闭源商用必须取得授权，同时不阻碍开源社区自由审计、修正与自建。
+
+三点必须知道的边界：
+
+1. **许可不可撤回**：按 Apache-2.0 已取得的历史副本仍按 Apache-2.0 有效，AGPL-3.0 约束的是本次变更之后的版本；已公开的历史提交也无法收回。
+2. **双许可的前提是版权集中**：商业授权只能由版权所有者出具。若之后接受外部贡献，需通过 CLA（贡献者许可协议）或版权转让维持双许可可行，否则将无法再单独授权闭源版本。
+3. **代码许可不覆盖数据与服务**：仓库内的演示数据、你导入的业务文档、以及所调用的 LLM / Embedding 商业 API，均不受 `LICENSE` 约束，需各自另行合规。
+
+第三方依赖的许可证见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)（含 MPL-2.0 的 certifi、LGPL-3.0 的 psycopg 等弱传染项）；这些许可与 AGPL-3.0 兼容，分发时随附其许可文本、不删改其声明即可。

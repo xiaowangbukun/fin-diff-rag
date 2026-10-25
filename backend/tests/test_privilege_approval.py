@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """账号权限双人复核（P0-1）：单人不得给自己/他人扩权。
 
 威胁模型：管理员账号本身就是"最大攻击面"——能建号、能升密、能重置动态口令。

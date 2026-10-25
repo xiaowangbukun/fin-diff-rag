@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """传输与浏览器边界（P0-2）：安全头 / HTTPS 跳转 / CORS 白名单 / Host 校验。
 
 为什么不用"反配上配一下就行"：

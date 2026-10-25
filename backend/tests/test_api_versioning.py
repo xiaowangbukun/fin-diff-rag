@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """API 版本化契约测试（#5：/api/v1 现行契约 + /api deprecated 别名）。
 
 背景：router 前缀去掉 `/api` 段后，由 main.py 对同一 router 对象

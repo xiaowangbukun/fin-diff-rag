@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """启动入口：python run.py [--port 8000]  |  python run.py build-index"""
 import argparse
 import sys

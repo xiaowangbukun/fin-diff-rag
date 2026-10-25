@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """pii.py —— 敏感信息识别与脱敏单元测试。
 
 两条主线：

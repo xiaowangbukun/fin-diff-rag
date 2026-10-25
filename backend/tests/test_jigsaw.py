@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """jigsaw.py —— 防拼图（Jigsaw / Salami Slicing）引擎单元测试。
 
 威胁模型决定了测试重点：攻击者每**一次**提问都合法，单次策略判定必然放行。

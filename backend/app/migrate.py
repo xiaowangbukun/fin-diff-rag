@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """增量 schema 管理：create_all 之后的白名单补列。
 
 SQLAlchemy 的 create_all 只建新表，不给已有表加列。本文件承担"启动期兜底"：

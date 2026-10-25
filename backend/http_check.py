@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """对真实运行中的服务做一次 HTTP 端到端确认（非 TestClient，走真实端口与中间件）。
 覆盖：权限闸门 / 脱敏 / 防拼图 / 意图网关 / 切片级密级 / Fail-Secure / 元数据封堵，
 以及 P0 安全边界：安全响应头 / 跨域预检 / 会话单端吊销 / 审计外置副本 / 审批队列。

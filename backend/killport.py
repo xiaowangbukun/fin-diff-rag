@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """释放 8000 端口（仅限本项目残留进程）。"""
 import os
 import re

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """会话生命周期（P0-4）：空闲超时、单端吊销、全端吊销、Cookie + CSRF。
 
 威胁模型（纯 JWT 的固有缺口）：

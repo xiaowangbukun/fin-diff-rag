@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """pytest 全局夹具：把每一条 DB 用例都隔离到**独立 schema**（真实 PostgreSQL）。
 
 #21 迁移说明：本文件此前把 DATABASE_URL 重定向到临时 SQLite 文件库。SQLite

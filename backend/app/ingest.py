@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """文档接入：解析 → 语义切片 → 敏感信息统计 → 向量化 → 落库。"""
 import hashlib
 import re

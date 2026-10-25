@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """审计锚点外置（P0-2 增强）：把链尾追加到应用不可回写的位置。
 
 为什么这组用例重要：

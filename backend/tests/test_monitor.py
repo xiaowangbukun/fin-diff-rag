@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """monitor.py —— 运维监控日报单元测试（P2-12）。
 
 日报的核心契约是**只读**：它自己也写一行审计的话，明天的"拦截数"里就多一条

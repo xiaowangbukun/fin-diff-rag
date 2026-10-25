@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """PDF 解析加固：表格结构化 / 多栏阅读顺序 / 提取质量检测 / 扫描件 OCR。
 
 why: 原 PDF 分支只有 pypdf 纯文本流，三个硬伤——

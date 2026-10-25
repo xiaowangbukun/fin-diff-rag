@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """metrics.py —— 安全指标监控单元测试（P2-12）。
 
 三条硬边界，本文件逐条钉住：

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """http_check 的运行包装（#21 PG-only 迁移配套）。
 
 http_check 的账本/样本集夹具（reset_ledger / reset_sample_docs）要直连库，

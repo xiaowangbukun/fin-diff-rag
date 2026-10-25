@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """认证与鉴权基础：密码哈希、JWT、会话、当前用户注入。"""
 import hashlib
 import hmac

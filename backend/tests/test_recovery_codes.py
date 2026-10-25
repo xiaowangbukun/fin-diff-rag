@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """一次性恢复码（备用码）：TOTP 绑定的自助恢复通道。
 
 覆盖口径：

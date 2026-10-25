@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Embedding：OpenAI 兼容接口（#21 后唯一通道）。
 
 本地哈希向量通道已随 SQLite 降级链路一并移除——它无语义维度，金融检索拿它

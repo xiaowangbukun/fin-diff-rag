@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """ingest.py —— 切片 / 指纹 / 版本快照单元测试（含 P2-10 幂等重入档）。
 
 重点：

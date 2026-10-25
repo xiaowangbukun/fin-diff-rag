@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """IdP claim → 本地角色/密级同步（app/idp_sync.py）。
 
 安全口径（每条都有对应用例）：

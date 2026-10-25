@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """端到端冒烟：验证权限闸门、脱敏、拒答、审计四条主线。"""
 import json
 import os

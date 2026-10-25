@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """安全指标监控（P2-12 设计文档口径）：多日时序 + 异常判定 + 落盘 + 告警。
 
 与 monitor.py 的分工：

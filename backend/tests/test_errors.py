@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """errors.py —— A4 HTTP 错误语义单元测试（503/500 全局映射 + 4xx 不被动用）。
 
 背景：A4 新增 `app/errors.py` 并在 `app/main.py` 注册了四个全局异常处理器。

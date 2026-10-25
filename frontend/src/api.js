@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 import axios from 'axios'
 import { clearSession, csrfToken, getToken, needsCsrf } from './session'
 

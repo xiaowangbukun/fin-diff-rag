@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """提示注入（Prompt Injection）防护：识别"覆盖系统规则 / 套取提示词"类话术。
 
 RAG 场景的注入面比普通对话更宽：载荷不止来自用户提问，更来自检索资料——

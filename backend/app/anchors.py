@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """审计锚点外置：把"链尾 (seq, hash)"写到数据库与应用磁盘之外的第三方。
 
 为什么需要（对照 audit.py 的三层防线）：

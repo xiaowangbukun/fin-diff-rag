@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """IdP claim → 本地角色/密级同步（默认关闭，白名单映射，安全上限硬编码）。
 
 为什么要默认关：

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { hasSession } from './session'
 import Login from './views/Login.vue'

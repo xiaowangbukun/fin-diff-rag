@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 

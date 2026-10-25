@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """C2：出厂口令风险的可观测与可选强闸（seed.default_password_users + 启动闸）。
 
 事故形态：seed.py 为保证演示可跑，给 admin（密级 3，可见绝密）与业务角色

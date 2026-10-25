@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """pdfx.py —— 解析质量标记与表格/多栏轻结构化单元测试。
 
 只挑**纯函数**部分：质量检测（决定文档要不要标 low）、表格转 Markdown

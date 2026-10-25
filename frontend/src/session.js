@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // 会话存储抽象（P0-4 / P0-2）
 //
 // 两种会话传输模式，由服务端 AUTH_COOKIE_MODE 决定，前端不需要配置：

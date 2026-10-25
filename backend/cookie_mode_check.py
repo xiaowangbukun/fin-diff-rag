@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Cookie 会话模式（AUTH_COOKIE_MODE=true）真机 HTTP 验证。
 
 为什么单独一个脚本而不是并进 http_check.py：两种模式的登录响应形态不同

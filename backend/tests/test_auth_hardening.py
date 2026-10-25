@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """认证强度闭环（闭环项 3）：首登强制改密、会话吊销、哈希升级、口令策略。
 
 事故口径：

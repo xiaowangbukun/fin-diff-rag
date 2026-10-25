@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """embed 启动期校验单测（#21 前置决策：方案 B + 维度一致性）。
 
 覆盖两条启动闸：

@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <el-dialog :model-value="modelValue" title="一次性恢复码（请立即保存）" width="460px"
              :close-on-click-modal="false" :show-close="false"

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """
 前置意图识别网关（对应「针对诱导套取：意图识别网关与推理约束」）。
 

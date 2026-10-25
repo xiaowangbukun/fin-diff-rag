@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # CI：每次 push / PR 跑「单元测试 + 前端构建」两道闸。
 #
 # 为什么必须进 CI（而不是只在本地跑）：

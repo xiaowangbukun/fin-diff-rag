@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """vindex.py —— 向量索引保障（此前零覆盖）。
 
 索引缺失不会让系统报错，只会让检索静默变慢：切片上万后全表精确扫描的

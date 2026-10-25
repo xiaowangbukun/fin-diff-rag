@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """OIDC 单点登录（授权码 + PKCE），对接企业 IdP。
 
 设计取舍：

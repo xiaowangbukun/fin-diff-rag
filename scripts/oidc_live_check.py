@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """OIDC 真联调脚本：对**正在运行**的 RAG 后端 + 真实 IdP 跑一遍授权码流程。
 
 与 pytest 的分工：

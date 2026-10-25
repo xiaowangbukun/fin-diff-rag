@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """真实 OIDC Provider（测试/本地联调用），只依赖标准库 + cryptography。
 
 为什么不是"mock"：本文件起一个真正的 HTTP 服务，完整跑一遍发现文档、

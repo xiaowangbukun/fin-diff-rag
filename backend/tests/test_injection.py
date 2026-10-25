@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """injection.py —— 提示注入扫描单元测试。
 
 RAG 场景里注入载荷不止来自用户提问，更来自**检索到的文档正文**。

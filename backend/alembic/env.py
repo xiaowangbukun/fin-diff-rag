@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Alembic 环境：连接串、模型元数据全部取自应用代码。
 
 为什么不用 alembic.ini 里的 sqlalchemy.url：

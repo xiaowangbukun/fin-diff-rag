@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """ORM 模型：部门 / 用户 / 文档 / ACL / 切片 / 审计。"""
 import json
 import uuid

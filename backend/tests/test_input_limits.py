@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """输入质量边界单测（#9：schema 约束 + ingest 卡口 + 上传大小配置化）。
 
 三层防线各司其职：

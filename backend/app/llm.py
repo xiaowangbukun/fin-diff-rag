@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """大模型调用：OpenAI 兼容协议；无 Key 时降级为抽取式回答，保证链路可跑通。"""
 import re
 

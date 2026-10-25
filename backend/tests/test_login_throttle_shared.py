@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """登录失败计数的跨 worker 共享（LOGIN_THROTTLE_BACKEND=db）。
 
 要解决的边界：进程内计数在多 worker 部署下是**各计各的**——攻击者把

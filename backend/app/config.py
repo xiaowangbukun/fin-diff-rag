@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """全局配置：全部可通过环境变量覆盖，便于金融内网部署时注入。"""
 import os
 from pathlib import Path

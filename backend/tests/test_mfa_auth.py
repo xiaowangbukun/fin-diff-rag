@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """闭环项 3 · S3：TOTP 双因子登录 + OIDC 单点登录（双适配）。
 
 覆盖口径：

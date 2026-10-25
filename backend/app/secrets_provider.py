@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """密钥托管（P0-5）：把"口令/密钥只存在于 .env 明文"这一层拿掉。
 
 金融机构的常见约束是：**密钥不得落在应用主机的配置文件里**，必须由 KMS /

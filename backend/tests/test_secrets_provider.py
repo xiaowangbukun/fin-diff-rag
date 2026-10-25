@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """密钥托管（P0-5）：终止"密钥只以明文躺在 .env 里"这一状态。
 
 验收口径（金融机构常见要求）：

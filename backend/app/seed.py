@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """初始化种子数据：部门、用户、示例金融文档。幂等，可重复执行。"""
 import json
 
