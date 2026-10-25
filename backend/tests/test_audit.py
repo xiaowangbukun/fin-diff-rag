@@ -174,6 +174,107 @@ def test_deleting_tail_row_is_invisible_in_db_chain(db, chain):
     assert res["checked"] == 2
 
 
+# ------------------------------------------------- 落库失败不能污染后续链
+
+
+class _FlakySessionLocal:
+    """包装真实 SessionLocal：构造正常，但 commit() 抛错一次（模拟落库瞬间 DB 故障）。
+
+    必须让错误发生在 `_assign_chain` 之后：`_commit_batch` 是"先持链锁分配
+    seq/row_hash，再 commit"——只有这样才复现真实故障点（告警本身没错，
+    错的是内存链尾已被推进、而库里没有对应行）。
+    """
+
+    def __init__(self, real, *args, **kwargs):
+        self._real = real
+        self._inner = real(*args, **kwargs)
+
+    def __getattr__(self, name):          # add()/refresh()/execute() 等一律透传
+        return getattr(self._inner, name)
+
+    def commit(self):
+        raise RuntimeError("simulated db outage")
+
+    def rollback(self):
+        self._inner.rollback()
+
+    def close(self):
+        self._inner.close()
+
+
+def test_failed_batch_commit_keeps_chain_linkable(db, chain, monkeypatch):
+    """一批审计落库失败后，后续行必须仍然能"正常链接"。
+
+    真实故障序列（DB 抖动 / 死锁 / 连接被 kill）：
+      1. 消费线程取到一批行，持链锁分配 seq 与 row_hash，_last_hash 已推进；
+      2. commit 失败 → 这批行**没有**进库（设计上不重试，靠 seq 断档暴露）；
+      3. 但进程内 _last_hash 仍停在"不存在的那行"上 → 此后每一行的 prev_hash
+         都指向一个库里没有的哈希。
+
+    后果不是"多一条告警"，而是 verify_chain 把后续**完好**的行判成
+    broken_links，`first_broken_id` 指向无辜行、`ok=False`——审计系统开始
+    指认自己人篡改。对金融场景这是最坏的一种误报：它会让真正的取证信号
+    （broken_rows）被噪声淹没，运维只能学会忽略审计告警。
+
+    正确语义：序号照旧前进（丢的行**必须**留下断档，不能悄悄补齐），
+    但链尾哈希要回退到"最后一条真正提交成功"的行，让链保持可验证。
+    """
+    rows0 = _write(db, "search", n=2)          # seq 1、2 正常入链
+    tail_hash = rows0[-1].row_hash
+
+    real = audit.SessionLocal
+    monkeypatch.setattr(
+        audit, "SessionLocal",
+        lambda *a, **k: _FlakySessionLocal(real, *a, **k),
+    )
+    audit.write_log(db, action="search", reason="落库失败的一批")   # 异步
+    assert audit.flush_audit(timeout=2.0) is True                  # 失败批次已被消费
+    monkeypatch.setattr(audit, "SessionLocal", real)
+
+    _write(db, "after", n=2)                   # 故障恢复后继续写
+    db.expire_all()
+    rows = _all(db)
+    assert [r.seq for r in rows] == [1, 2, 4, 5]   # 3 号丢了，断档如实保留
+
+    res = audit.verify_chain(db)
+    assert res["seq_gaps"] == 1, res               # 丢了行 → 必须能被看见
+    assert res["broken_rows"] == 0, res
+    assert res["broken_links"] == 0, res           # 后续行不该被误判为篡改
+    assert rows[2].prev_hash == tail_hash          # 链重新接回最后一条已提交行
+
+
+def test_consumer_thread_survives_unexpected_batch_exception(db, chain, monkeypatch):
+    """消费线程绝不能因为"某一批出了意料之外的异常"而退出。
+
+    线程死掉的后果比丢一批行严重得多：之后所有审计行只会堆在内存队列里
+    （队列满才回落同步直写），`flush_audit` 永远等不到 unfinished_tasks 归零，
+    关机收尾也必然超时——对外表现却是"服务正常、审计在写"，直到进程重启才
+    发现中间整段没有落库记录。这里钉住"异常收敛到单批、线程继续工作"。
+    """
+    real = audit._commit_batch
+    calls = {"n": 0}
+
+    def _boom_once(batch):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("unexpected failure in batch writer")
+        return real(batch)
+
+    monkeypatch.setattr(audit, "_commit_batch", _boom_once)
+
+    audit.write_log(db, action="search", reason="炸掉的一批")
+    assert audit.flush_audit(timeout=2.0) is True      # 线程活着，任务已 task_done
+
+    audit.write_log(db, action="search", reason="异步恢复")
+    assert audit.flush_audit(timeout=2.0) is True
+
+    db.expire_all()
+    rows = _all(db)
+    assert len(rows) == 1                              # 只丢了炸掉的那一批
+    assert rows[0].reason == "异步恢复"
+    assert audit.verify_chain(db)["ok"] is True
+
+
 # ------------------------------------------------------------------ 启动锚点
 
 

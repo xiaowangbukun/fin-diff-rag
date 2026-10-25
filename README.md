@@ -158,7 +158,7 @@ fin-rag/
 │   │   └── routers/            auth / docs / chat / admin
 │   ├── alembic.ini             结构迁移配置（注释必须 ASCII：alembic 按 locale 读 ini）
 │   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）
-│   ├── tests/                  pytest 单测体系（842 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
+│   ├── tests/                  pytest 单测体系（844 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
 │   ├── smoke.py                端到端冒烟
 │   ├── http_check.py           真实服务 HTTP 验证（Bearer 模式基线）
 │   ├── cookie_mode_check.py    真实服务 HTTP 验证（Cookie + CSRF 模式）

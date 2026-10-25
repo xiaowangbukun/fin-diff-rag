@@ -156,19 +156,34 @@ def _commit_batch(batch: list[AuditLog]) -> None:
     """
     if not batch:
         return
+    global _last_hash
     db = SessionLocal(expire_on_commit=False)
     tail: tuple[str, int] = ("", 0)
     committed = False
+    snap: tuple[str, int] = (_last_hash, _last_seq)
     try:
         with _chain_lock:
-            for log in batch:
-                _assign_chain(log)
-                db.add(log)
-            db.commit()
-            # 在锁内只取链尾快照：外发涉及文件 fsync / HTTP，绝不能持链锁做 I/O，
-            # 否则 sink 变慢会直接卡住所有审计写入（进而卡住请求）。
-            tail = (_last_hash, _last_seq)
-            committed = True
+            # 快照必须在锁内取：这是"最后一条真正提交成功"的链尾。
+            snap = (_last_hash, _last_seq)
+            try:
+                for log in batch:
+                    _assign_chain(log)
+                    db.add(log)
+                db.commit()
+                # 在锁内只取链尾快照：外发涉及文件 fsync / HTTP，绝不能持链锁做 I/O，
+                # 否则 sink 变慢会直接卡住所有审计写入（进而卡住请求）。
+                tail = (_last_hash, _last_seq)
+                committed = True
+            except Exception:
+                # 关键：落库失败必须把**进程内链尾**回退到最后一条真正提交成功的行。
+                # 否则 _last_hash 停在库里不存在的那一行上，此后每一行的 prev_hash
+                # 都指向空哈希 → verify_chain 把完好的后续行判成 broken_links，
+                # first_broken_id 指认无辜行、ok=False：DB 抖一下，审计系统就开始
+                # 指认自己人篡改，真正的取证信号（broken_rows）被噪声淹没。
+                # 序号**不回退**：这批行是被悄悄丢弃的（调用方早已返回），
+                # 必须留下可检出的 seq 断档，不能悄悄补齐。
+                _last_hash = snap[0]
+                raise
     except Exception as e:
         try:
             db.rollback()
@@ -211,7 +226,13 @@ def _drain_all() -> None:
 
 
 def _consumer() -> None:
-    """守护线程：等新品（事件唤醒，AUDIT_BATCH_TIMEOUT 兜底）→ 批量取 → 单事务落库。"""
+    """守护线程：等新品（事件唤醒，AUDIT_BATCH_TIMEOUT 兜底）→ 批量取 → 单事务落库。
+
+    单批异常**不得**终结消费线程：线程一旦死掉，之后所有审计行只会堆在队列里
+    （队列满才回落同步直写），而 flush_audit 永远等不到 unfinished_tasks 归零，
+    关机收尾也会超时——表现是"审计看起来在写，其实一条没落库"。这里把异常
+    收敛到单批：照常 task_done、照常继续消费，故障交给 stderr 与 seq 断档暴露。
+    """
     while True:
         _wake.wait(timeout=AUDIT_BATCH_TIMEOUT)
         _wake.clear()
@@ -225,7 +246,7 @@ def _consumer() -> None:
             continue
         if any(b is _SHUTDOWN for b in batch):
             real = [b for b in batch if b is not _SHUTDOWN]
-            _commit_batch(real)
+            _safe_commit_batch(real)
             for _ in batch:
                 try:
                     _audit_q.task_done()
@@ -233,9 +254,18 @@ def _consumer() -> None:
                     pass
             _drain_all()
             return
-        _commit_batch(batch)
+        _safe_commit_batch(batch)
         for _ in batch:
             _audit_q.task_done()
+
+
+def _safe_commit_batch(batch: list[AuditLog]) -> None:
+    """`_commit_batch` 的防炸壳：异常记 stderr，绝不让消费线程退出。"""
+    try:
+        _commit_batch(batch)
+    except Exception as e:  # noqa: BLE001 审计链路必须尽最大可能存活
+        print(f"[audit] 批处理异常（{len(batch)} 行已丢弃，"
+              f"{type(e).__name__}: {e}）", file=sys.stderr)
 
 
 def _ensure_consumer() -> None:
@@ -343,6 +373,7 @@ def write_log(
     注意：异步路径下返回行的链字段（seq/prev_hash/row_hash）要等消费线程
     落库后才赋值——测试里"写后即查"必须先调 flush_audit()。
     """
+    global _last_hash, _last_seq
     log = AuditLog(
         id=new_id(),  # 预生成：调用方（如 chat 回 audit_id）无需等待落库
         user_id=getattr(user, "id", "") or "",
@@ -365,11 +396,19 @@ def write_log(
         except queue.Full:
             pass  # 背压：回落同步直写
     with _chain_lock:
-        _assign_chain(log)
-        db.add(log)
-        db.commit()
-        db.refresh(log)
-        tail = (_last_hash, _last_seq)
+        snap = (_last_hash, _last_seq)
+        try:
+            _assign_chain(log)
+            db.add(log)
+            db.commit()
+            db.refresh(log)
+            tail = (_last_hash, _last_seq)
+        except Exception:
+            # 同步直写的失败会**抛给调用方**（不存在"悄悄丢行"），所以序号一并
+            # 回退：重试应是一次干净写入，不该凭空多出一个 seq 断档。链尾哈希
+            # 同样必须回退，否则后续行 prev_hash 指向库里不存在的行。
+            _last_hash, _last_seq = snap
+            raise
     # 同步路径同样要外送（启动告警/背压回落都属于合规上不能缺的行）
     _ship_rows([log])
     _emit_external_anchor(*tail)
