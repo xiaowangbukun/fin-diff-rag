@@ -67,6 +67,12 @@ SCHEMA_PATCHES: list[tuple[str, str, str]] = [
      "ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_codes TEXT DEFAULT ''"),
     ("users", "oidc_subject",
      "ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_subject VARCHAR(255) DEFAULT ''"),
+    # IdP 密级同步溯源（OIDC_CLAIM_SYNC_MODE=authoritative 撤权所需）。
+    # 旧库默认 -1/0 = "未记录基线、未同步过"，行为与旧的只升不降完全一致。
+    ("users", "idp_clearance_synced",
+     "ALTER TABLE users ADD COLUMN IF NOT EXISTS idp_clearance_synced INTEGER DEFAULT 0"),
+    ("users", "idp_clearance_base",
+     "ALTER TABLE users ADD COLUMN IF NOT EXISTS idp_clearance_base INTEGER DEFAULT -1"),
     # P0-1 用户权限变更审批：审批单的目标从"文档"扩展到"账号"，需要区分
     # （旧库默认 document，既有行为不变）。
     ("approval_requests", "subject_type",

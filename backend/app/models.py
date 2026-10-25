@@ -100,6 +100,14 @@ class User(Base):
     # 首次 SSO 登录按 username claim 匹配到本地账号后绑定 sub，此后以 sub 为准。
     # 唯一约束做"部分索引"：空串代表未绑定 SSO，不能互相冲突。
     oidc_subject: Mapped[str] = mapped_column(String(255), default="")
+    # ---- IdP 密级同步溯源（OIDC_CLAIM_SYNC_MODE=authoritative 用）----
+    # idp_clearance_synced：上一次 claim 同步写入的密级（0 = 从未同步过）；
+    # idp_clearance_base：同步前本地已有的密级基线（-1 = 尚未记录）。
+    # 目的：让 IdP 侧撤权（把密级调低）能真正回落，但**只回落到本地基线**——
+    # 本地管理员另行授予的更高密级不会被 IdP 覆盖。两者都为"本地改过"留下
+    # 判据：当前密级若不等于 max(base, synced)，说明是本地改的，基线应重置。
+    idp_clearance_synced: Mapped[int] = mapped_column(Integer, default=0)
+    idp_clearance_base: Mapped[int] = mapped_column(Integer, default=-1)
 
     __table_args__ = (
         Index("uq_users_oidc_subject", "oidc_subject", unique=True,

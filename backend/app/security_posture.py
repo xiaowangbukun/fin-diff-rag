@@ -120,6 +120,16 @@ def assess() -> list[Finding]:
         fail("FAIL_SECURE_ENABLED", "Fail-Secure 被关闭：权限引擎故障时会继续用内部知识库作答",
              "置 FAIL_SECURE_ENABLED=true")
 
+    # 单账号账本挡不住"N 个低权限账号各取一块、线下合并"——这条防线是检出而非拦截，
+    # 关掉不等于数据会立刻外流，但等于没人会被告知发生了合谋，故按 WARN 处理。
+    if _v("JIGSAW_ENABLED", True) and not _v("JIGSAW_COALITION_ENABLED", True):
+        warn("JIGSAW_COALITION",
+             "跨账号合谋检出被关闭：多账号各取一块线下合并，单账号账本不会报警",
+             "置 JIGSAW_COALITION_ENABLED=true（管理端 /api/admin/jigsaw/coalition 可查）")
+    elif _v("JIGSAW_ENABLED", True):
+        ok("JIGSAW_COALITION",
+           "跨账号合谋检出已启用（长窗口多账号并集覆盖率，管理端可查）")
+
     # ---------- 审计：只追加 + 外置锚点 ----------
     if _v("AUDIT_APPEND_ONLY", True):
         ok("AUDIT_APPEND_ONLY", "审计只追加触发器已启用（UPDATE/DELETE 被数据库拒绝）")

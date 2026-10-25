@@ -86,7 +86,7 @@ def test_production_posture_is_clean(prod):
     keys = _by_key(findings)
     for key in ("SECURITY_HEADERS", "JIGSAW_ENABLED", "INTENT_ENABLED",
                 "FAIL_SECURE_ENABLED", "AUDIT_APPEND_ONLY", "JWT_SECRET",
-                "AUTH_COOKIE_MODE", "MFA_ENFORCE"):
+                "AUTH_COOKIE_MODE", "MFA_ENFORCE", "JIGSAW_COALITION"):
         assert keys[key].level == OK, (key, keys[key].level)
 
 
@@ -108,6 +108,14 @@ def test_missing_jwt_secret_is_fail(prod):
     item = _by_key(assess())["JWT_SECRET"]
     assert item.level == FAIL
     assert "JWT_SECRET" in item.fix
+
+
+def test_coalition_detection_off_is_warn(prod):
+    """关掉合谋检出：不拦数据，但"有人在对同一篇文档分工搬运"再也没人知道。"""
+    prod.setattr(config, "JIGSAW_COALITION_ENABLED", False)
+    item = _by_key(assess())["JIGSAW_COALITION"]
+    assert item.level == WARN
+    assert "JIGSAW_COALITION_ENABLED=true" in item.fix
 
 
 def test_metrics_off_is_warn_with_remediation(prod):

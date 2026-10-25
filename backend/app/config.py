@@ -220,6 +220,12 @@ OIDC_CLAIM_SYNC_ALLOW_ADMIN = _env("OIDC_CLAIM_SYNC_ALLOW_ADMIN", "false").lower
 # claim 里出现白名单外的角色/密级值时的口径：ignore（忽略，保持本地现状）
 # / deny（拒绝本次登录）。严格模式适合 IdP 与本地映射表强一致的环境。
 OIDC_CLAIM_SYNC_UNKNOWN = _env("OIDC_CLAIM_SYNC_UNKNOWN", "ignore").lower()
+# 密级同步的**撤权口径**（角色本来就按 claim 存在即对齐，不涉及本项）：
+#   union（默认）= 只升不降：claim 只能把密级往上抬，撤权必须走本地双人复核；
+#   authoritative = 允许 claim 撤权：IdP 把人的密级调低时，**只回落到同步前
+#     的本地基线**（见 users.idp_clearance_base），本地管理员另行授予的更高
+#     密级不会被抹掉。适合"入转调离由 IdP 驱动、离岗即收权"的机构。
+OIDC_CLAIM_SYNC_MODE = _env("OIDC_CLAIM_SYNC_MODE", "union").lower()
 
 # ---------- 登录防爆破（#11）----------
 # pbkdf2 600k 迭代只能压慢爆破，不能阻止——按 key（用户名 / 用户名#mfa）失败
@@ -353,6 +359,16 @@ JIGSAW_LONG_WINDOW_DAYS = int(_env("JIGSAW_LONG_WINDOW_DAYS", "7"))
 JIGSAW_LONG_USER_CHAR = int(_env("JIGSAW_LONG_USER_CHAR", "60000"))   # 近 N 日用户累计字符上限
 JIGSAW_LONG_DOC_CHAR = int(_env("JIGSAW_LONG_DOC_CHAR", "25000"))     # 近 N 日单文档累计字符上限
 JIGSAW_RISK_READONLY = int(_env("JIGSAW_RISK_READONLY", "3"))        # 有效风险分达到该值 → 转人工
+
+# ---------- 跨账号合谋拼图（多账号各取一块、线下合并）----------
+# 单账号账本按定义挡不住合谋：每个人都没越权、覆盖率都不高，并集却逼近全文。
+# 这里做的是**检出**而非拦截——同一篇文档被多个账号分别读到后，按窗口内的
+# 切片并集覆盖率给管理端报警。刻意不自动封人/封文档：热门文档被很多同事
+# 正常阅读时并集天然很高，自动阻断会直接把正常业务打死；人工复核才是正确出口。
+JIGSAW_COALITION_ENABLED = _env("JIGSAW_COALITION_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on")
+JIGSAW_COALITION_MIN_USERS = int(_env("JIGSAW_COALITION_MIN_USERS", "3"))   # 至少几个账号参与
+JIGSAW_COALITION_COVER = float(_env("JIGSAW_COALITION_COVER", "0.85"))      # 并集覆盖率报警线
 
 # ---------- 密级变更审批流（P2-9）----------
 # 降密 = 把受限内容开放出去，不可逆，必须走双人复核。

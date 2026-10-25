@@ -113,7 +113,7 @@
 
 ### 已知边界
 
-- **多账号合谋**（N 个低权限账号各取一块、线下合并）靠单账号账本挡不住，需要跨用户关联分析或离线 DLP 兜底，当前未实现。
+- **多账号合谋**（N 个低权限账号各取一块、线下合并）已实现**检出**：按长窗口（`JIGSAW_LONG_WINDOW_DAYS`）聚合多账号对同一文档的已见切片并集，参与账号数 ≥ `JIGSAW_COALITION_MIN_USERS`（默认 3）且并集覆盖率 ≥ `JIGSAW_COALITION_COVER`（默认 85%）即在 `GET /api/admin/jigsaw/coalition`（管理端 stats 的 `jigsaw_coalition` 计数）列出成员、条数、字符数。**刻意只检出、不自动处置**：热门文档被很多同事正常阅读时并集天然很高，自动封禁会把正常业务打死，正确出口是人工复核。明细被 `SEEN_DETAIL_CAP` 截断时只能给条数上界，返回 `approx=true` 明确标注，不冒充精确并集覆盖率。真正的阻断仍需跨用户关联分析或离线 DLP，当前未实现。
 - 覆盖率阈值是经验值，不同文档长度分布下需要按机构实际调。
 
 ---
@@ -151,14 +151,16 @@ fin-rag/
 │   │   ├── totp.py             TOTP 第二因子（RFC 6238 + 密钥 Fernet 加密入库）
 │   │   ├── recovery.py         一次性恢复码（摘要存储、一码一用、整组重生成）
 │   │   ├── oidc.py             OIDC 客户端（discovery / JWKS / PKCE / 验签）
+│   │   ├── idp_sync.py         IdP claim → 本地角色/密级同步（白名单映射 + 撤权口径 + 基线溯源）
+│   │   ├── security_posture.py 启动安全姿态自检（实际生效开关 → OK/INFO/WARN/FAIL + strict 闸门）
 │   │   ├── vindex.py           pgvector 向量索引保障（HNSW）
 │   │   ├── httpguard.py        浏览器边界中间件（安全头 / HTTPS 跳转 / CORS 闸 / Host 白名单）
 │   │   ├── secrets_provider.py 密钥托管适配（file 密封卷 / http 网关，启用后不回落 .env）
 │   │   ├── seed.py             内置示例数据（含混合密级文档）
 │   │   └── routers/            auth / docs / chat / admin
 │   ├── alembic.ini             结构迁移配置（注释必须 ASCII：alembic 按 locale 读 ini）
-│   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）
-│   ├── tests/                  pytest 单测体系（865 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
+│   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）+ 0002_idp_clearance_provenance.py（IdP 密级同步溯源）
+│   ├── tests/                  pytest 单测体系（884 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
 │   ├── smoke.py                端到端冒烟
 │   ├── http_check.py           真实服务 HTTP 验证（Bearer 模式基线）
 │   ├── cookie_mode_check.py    真实服务 HTTP 验证（Cookie + CSRF 模式）
@@ -316,6 +318,7 @@ npm run build    # 产出 dist/，后端会自动托管，直接访问 8000 即�
     | `SECRETS_PROVIDER` | none —— 高危密钥在 `.env` 明文 | `file`+`SECRETS_DIR`（或 `http`+`SECRETS_URL`），并 `REQUIRE_SECRETS_PROVIDER=true` |
     | `TRUST_PROXY_HEADERS` | 需按部署形态二选一 | 反代终止 TLS：`true` + uvicorn `FORWARDED_ALLOW_IPS`；源站可直连：`false` |
     | `OIDC_CLAIM_SYNC_UNKNOWN` | ignore（开启 claim 同步时） | `reject`：IdP 侧未登记的取值直接拒绝登录 |
+    | `OIDC_CLAIM_SYNC_MODE` | union —— 只升不降，IdP 侧调低密级不生效 | 入转调离由 IdP 驱动时用 `authoritative`（只回落本地基线，见「八、已知限制」） |
 
     `FAIL` 项（关掉即等于删掉一条防线，必须清零）：`SECURITY_HEADERS`、`JIGSAW_ENABLED`、`INTENT_ENABLED`、`FAIL_SECURE_ENABLED`、`AUDIT_APPEND_ONLY`、`JWT_SECRET`。
 
@@ -384,7 +387,7 @@ pip install --no-index --find-links=wheels/ -r requirements-lock.txt
 ```bash
 cd backend
 python smoke.py            # 262 项断言，报告落在 backend/.smoke_report.txt
-python run_httpcheck.py    # 对真实运行中的服务做 46 项 HTTP 断言（Bearer 模式，需先启动服务）
+python run_httpcheck.py    # 对真实运行中的服务做 49 项 HTTP 断言（Bearer 模式，需先启动服务）
 # Cookie 会话模式（AUTH_COOKIE_MODE=true 启动）：令牌只走 HttpOnly Cookie + CSRF 双提交
 python cookie_mode_check.py   # 14 项断言（HttpOnly / SameSite / CSRF 缺失与错值均 403 / 登出清 Cookie）
 ```
@@ -421,7 +424,7 @@ python killport.py
 
 `.github/workflows/ci.yml` 在每次 push / PR 上跑两道闸，**不需要任何自建 runner 或外部服务**：
 
-- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（865 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
+- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（884 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
 - **frontend**：Node 20，`npm ci || npm install` 后 `vite build`，产物作为 artifact 保留 7 天。
 - 同一分支新推送会取消旧运行（`concurrency`）；测试只需 PostgreSQL，所以**自建 Gitea/GitLab CI 也照这个顺序抄**：起 PG 16 + pgvector → 建扩展 → 装 `requirements.txt` → `pytest` → `npm run build`。
 
@@ -429,7 +432,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 `http_check.py` 自带夹具重置（清空拼图账本 + 删除历次遗留的同名测试样本集），因此**可反复执行且结果稳定**——持久库上重复跑不会因累积的限流状态或重复样本稀释覆盖率而误报。
 
-`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **865/865**、smoke **262/262**、HTTP 端到端 **46/46**（真实向量服务；离线 fake 向量下仅"绝密附注语义召回"一条依赖向量质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。第五轮复核专项：**安全姿态自检（启动打印实际生效姿态 + `STRICT_SECURITY_POSTURE=true` 未清零即拒绝启动 + `GET /api/admin/security-posture` 只读接口）、审计链失败批次可续链/消费线程存活**。
+`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **884/884**、smoke **262/262**、HTTP 端到端 **49/49**（真实向量服务；离线 fake 向量下仅"绝密附注语义召回"一条依赖向量质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。第五轮复核专项：**安全姿态自检（启动打印实际生效姿态 + `STRICT_SECURITY_POSTURE=true` 未清零即拒绝启动 + `GET /api/admin/security-posture` 只读接口）、审计链失败批次可续链/消费线程存活**。第六轮残留风险专项：**IdP 密级撤权口径（`OIDC_CLAIM_SYNC_MODE=authoritative` + 基线溯源迁移 `0002`）、跨账号合谋拼图检出（`GET /api/admin/jigsaw/coalition` + 管理端面板 + stats 计数）**。
 
 ---
 
@@ -511,7 +514,8 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 | POST | `/api/admin/approvals/{id}/approve` | 复核通过（申请人不能自批；目标账号本人不能批；审批人密级不低于目标密级；最后一名 admin 不可被降权），通过即落变更 |
 | POST | `/api/admin/approvals/{id}/reject` | 驳回（必须填理由），审批单置 `rejected` |
 | GET | `/api/admin/jigsaw` | 拼图攻击风险榜（限管理员）：按累积披露比例排序的高危组合 |
-| GET | `/api/admin/stats` | 文档数、切片数、近 7 日拦截/限流/意图阻断降级次数、防拼图高危数、运行模式 |
+| GET | `/api/admin/jigsaw/coalition` | 跨账号合谋检出（限管理员，只读）：长窗口内多账号对同一文档的并集覆盖率、参与成员与条数；明细截断时 `approx=true` |
+| GET | `/api/admin/stats` | 文档数、切片数、近 7 日拦截/限流/意图阻断降级次数、防拼图高危数与合谋检出数、运行模式 |
 | POST | `/api/admin/metrics/cleanup` | 清理过期运维日报 markdown（仅管理员，`?days=` 可覆盖保留天数，默认 `METRICS_RETENTION_DAYS`=90） |
 
 ---
@@ -606,7 +610,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 - 管理员操作二次审批已覆盖密级变更、访问范围（acl_mode/归属部门）变更、allow 授权与**账号权限放宽**（`user_privilege`），并已提供**审批中心前端页面**（`/#/approvals`，待办/已办、自审拦截、驳回必填理由）；最后一名启用中的管理员受保护（不可被降权/停用），新建账号的初始授权写入 `status=granted` 的审批留痕
 - 水印与防截屏：答案面板叠加用户工号暗水印，便于事后定责
 - 大模型侧加固：提示词注入检测、输出 Topic Guard（当前意图网关为规则 + 归一化 + 锚句相似度口径，未接模型分类器）
-- 多账号合谋防御：当前拼图防护按单账号记账，N 个低权限账号各取一块线下合并需要跨用户关联分析，未实现
+- 多账号合谋防御：已落地**检出**（`GET /api/admin/jigsaw/coalition`，长窗口多账号并集覆盖率，标记 `approx` 近似），交人工复核；自动阻断（跨用户关联分析 / 离线 DLP 联动）未实现
 - 向量重建保护：文档降密已强制走双人复核审批（不可逆操作不落即生效）；仍缺：审批通过后对历史切片向量做版本化重建审计
 - 矩阵汇报组织架构：当前部门树 + 多主体 ACL 可覆盖多数场景，正式矩阵汇报（一人多线）需要显式副部门字段
 - 性能：万级以上切片建议换 Milvus 或 pgvector HNSW 索引、引入 Celery 异步入库管道
@@ -625,7 +629,8 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 - **审计表只追加是 DB 层强约束**（`AUDIT_APPEND_ONLY=true`）：PG 触发器拒绝 `UPDATE` / `DELETE` / `TRUNCATE`，报错信息里带破窗指令。边界：超级用户可用 `SET session_replication_role = replica` 临时关掉触发器——那属于"DBA 作恶"面，靠外置行副本（`AUDIT_SHIP_ROWS`）对账检出。演练/取证需要改行时只能在同一事务内 `SET LOCAL finrag.audit_append_only = 'off'`，应用代码永不下发该开关；归档请用 `scripts/audit_archive.py`（只导不删），在线表不要 DELETE。
 - **TOTP 的三个口径**（`app/totp.py`）：① 允许 ±1 个时间步时钟漂移（30 秒），再宽就是给爆破让路；② 同一口令在同一窗口内用过一次即作废（防重放），所以"刚绑定完/刚登录完又立刻提交同一个码"会提示等待验证器刷新，这是预期行为；③ 密钥入库前用 Fernet 加密，密钥材料来自 `MFA_SECRET_KEY`（缺失则由 `JWT_SECRET` 派生）——两者都缺时**拒绝绑定**而不是明文存第二因子；轮换该密钥会让已绑定密钥无法解密，需走管理员「重置动态口令」。
 - **一次性恢复码（手机丢失/换机的自助出口）**：绑定动态口令成功即发放 `RECOVERY_CODE_COUNT`（默认 10）个码，形如 `ABCD-EFGH-JKLM`——12 位 × 32 字符表（去掉 0/O/1/I/L 等易混字符，约 60 bit 熵），服务端只存 HMAC-SHA256 摘要（密钥由 `MFA_SECRET_KEY` 派生），明文仅在发放/重新生成的那一次响应里返回。每个码用过即标 `used_at`，**一个码只能登录一次**；登录仍要先验口令（恢复码只替代第二因子，不是登录凭证）。剩余 ≤2 时登录响应带 `recovery_warning`，用尽后明确提示"联系管理员"。失效面：重新生成（需口令再验）整组作废旧码；解绑动态口令、管理员「重置动态口令」都会清空恢复码。`RECOVERY_CODE_ENABLED=false` 可应急关闭该通道（存量码立即失效）。
-- **OIDC 认证之外，IdP claim → 本地权限同步是可选且默认关闭的**（`app/idp_sync.py`）：`OIDC_CLAIM_SYNC=true` 后只认 `OIDC_ROLE_MAP` / `OIDC_CLEARANCE_MAP` 白名单映射（`fin_research:research` 这类"IdP 值:本地值"），claim 里没登记的值按 `OIDC_CLAIM_SYNC_UNKNOWN=ignore` 忽略或 `deny` 拒绝本次登录；**密级上限** `OIDC_CLAIM_SYNC_MAX_CLEARANCE`（默认 1=内部）保证 IdP 侧配错也不会把人抬到绝密，且同步只升不降（降密仍必须走本地双人复核审批）；`admin` 需额外开关 `OIDC_CLAIM_SYNC_ALLOW_ADMIN`，本地已授予的 admin 不会被 claim 抹掉；**claim 缺失不等于收权**（IdP 漏配 claim 时保持本地角色），只有 claim 明确下发空列表才收回同步得来的角色。每次实际变更写一条 `action=idp_claim_sync` 审计。仍缺：部门 claim → 本地部门树同步、SAML 2.0。
+- **OIDC 认证之外，IdP claim → 本地权限同步是可选且默认关闭的**（`app/idp_sync.py`）：`OIDC_CLAIM_SYNC=true` 后只认 `OIDC_ROLE_MAP` / `OIDC_CLEARANCE_MAP` 白名单映射（`fin_research:research` 这类"IdP 值:本地值"），claim 里没登记的值按 `OIDC_CLAIM_SYNC_UNKNOWN=ignore` 忽略或 `deny` 拒绝本次登录；**密级上限** `OIDC_CLAIM_SYNC_MAX_CLEARANCE`（默认 1=内部）保证 IdP 侧配错也不会把人抬到绝密；`admin` 需额外开关 `OIDC_CLAIM_SYNC_ALLOW_ADMIN`，本地已授予的 admin 不会被 claim 抹掉；**claim 缺失不等于收权**（IdP 漏配 claim 时保持本地角色），只有 claim 明确下发空列表才收回同步得来的角色。每次实际变更写一条 `action=idp_claim_sync` 审计。仍缺：部门 claim → 本地部门树同步、SAML 2.0。
+- **密级撤权口径可配**（`OIDC_CLAIM_SYNC_MODE`，角色同步不受影响）：默认 `union` 只升不降——IdP 侧把人调低密级时同步不动，撤权必须走本地审批；`authoritative` 允许 IdP 撤权，但**只回落到同步前的本地基线**（`users.idp_clearance_base` / `idp_clearance_synced`，迁移 `0002`）：本地管理员另行授予的更高密级不会被 IdP 一次误配抹掉，IdP 调低时也不至于卡在旧的高密级上。本地改过密级（当前值 ≠ max(基线, 上次同步值)）会把基线重置为当前值——"本地重新定调"优先于 IdP。适合入转调离由 IdP 驱动、离岗即收权的机构；前提是 IdP 侧 claim 准确且变更可审计。
 - **OIDC 只实现了授权码 + PKCE 的单点认证**：不支持 SAML 2.0；`OIDC_JIT_PROVISION` 默认关，即"先建号后认证"。IdP 的 discovery/JWKS 在进程内缓存 `OIDC_METADATA_TTL`（默认 3600 秒），IdP 轮换签名密钥后最长需等一个 TTL 才恢复（可重启进程立即刷新）。
 - **高风险操作尚未额外验动态口令**（如导出/批量下载）：当前靠口令再验（改密、绑定/解绑 MFA、重新生成恢复码），MFA 步进验证仅用于登录，属后续增强。
 - 输入质量边界见「六之五」：所有超长/越界入参在边界拒绝（422/400/413），曾经的 PG DataError 500 与 `title[:255]` 静默截断已消除。

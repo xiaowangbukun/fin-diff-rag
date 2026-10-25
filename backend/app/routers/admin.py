@@ -393,6 +393,19 @@ def jigsaw_board(_: User = Depends(require_admin), db: Session = Depends(get_db)
     return rows
 
 
+@router.get("/jigsaw/coalition")
+def jigsaw_coalition(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """跨账号合谋拼图检出（只读，不做自动处置）。
+
+    单账号账本挡不住"N 个低权限账号各取一块、线下合并"：每个人单独看都
+    没越权。这里按长窗口给出同一文档被多账号分别读取后的**并集覆盖率**，
+    超线即列出来供人工复核（成员、条数、字符数一并给出）。
+    """
+    from ..jigsaw import coalition_alerts
+
+    return coalition_alerts(db, limit=30)
+
+
 @router.get("/audit")
 def list_audit(action: str = "", decision: str = "", username: str = "", limit: int = 100,
                user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -559,12 +572,15 @@ def stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
         )
     ).scalar() or 0
     jigsaw_risk = 0
+    jigsaw_coalition = 0
     if JIGSAW_ENABLED:
-        from ..jigsaw import risk_board
+        from ..jigsaw import coalition_alerts, risk_board
         jigsaw_risk = len(risk_board(db, limit=100))
+        jigsaw_coalition = len(coalition_alerts(db, limit=100))
     return StatsOut(
         docs=docs, chunks=chunks, users=users, audits=audits, denied_7d=denied,
-        throttled_7d=throttled, jigsaw_risk=jigsaw_risk, blocked_7d=blocked,
+        throttled_7d=throttled, jigsaw_risk=jigsaw_risk,
+        jigsaw_coalition=jigsaw_coalition, blocked_7d=blocked,
         **modes,
     )
 

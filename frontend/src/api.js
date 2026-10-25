@@ -92,6 +92,8 @@ export const admin = {
   auditDetail: (id) => api.get(`/admin/audit/${id}`),
   stats: () => api.get('/admin/stats'),
   jigsaw: () => api.get('/admin/jigsaw'),
+  // 跨账号合谋拼图检出（多账号各取一块线下合并；只读，交人工复核）
+  coalition: () => api.get('/admin/jigsaw/coalition'),
   // 审批中心（密级 / 访问范围 / 新增授权 / 账号权限变更的双人复核）
   approvals: () => api.get('/admin/approvals'),
   approve: (id, reason = '') => api.post(`/admin/approvals/${id}/approve`, { reason }),

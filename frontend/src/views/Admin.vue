@@ -118,6 +118,38 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <el-divider />
+      <div class="page-title">跨账号合谋检出</div>
+      <div class="muted" style="margin-bottom:8px">
+        同一篇文档被多个账号分别读取、并集覆盖率超过阈值时列出（只检出、不自动处置）——
+        单账号账本挡不住"每人取一块、线下合并"，需人工复核后按机构流程处理。标记「近似」的条目
+        是明细被截断后的上界估算，不能当作确凿证据。
+      </div>
+      <el-table :data="coalition" size="small" empty-text="当前无合谋疑点">
+        <el-table-column label="文档" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.doc_title }}
+            <el-tag v-if="row.approx" size="small" type="info">近似</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="参与账号" width="90">
+          <template #default="{ row }">{{ row.users }} 个</template>
+        </el-table-column>
+        <el-table-column label="并集覆盖" width="95">
+          <template #default="{ row }">{{ row.union_seen }}/{{ row.total }} 段</template>
+        </el-table-column>
+        <el-table-column label="覆盖率" width="140">
+          <template #default="{ row }">
+            <el-progress :percentage="Math.round(row.coverage * 100)" color="#c0392b" :stroke-width="10" />
+          </template>
+        </el-table-column>
+        <el-table-column label="成员（按披露量）" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.members.map(m => `${m.username} ${m.seen}段`).join('、') }}
+          </template>
+        </el-table-column>
+      </el-table>
   </div>
 </template>
 
@@ -131,9 +163,11 @@ const depts = ref([])
 const roles = ref([])
 const levels = ref([])
 const board = ref([])
+const coalition = ref([])
 
 async function loadBoard() {
   try { board.value = await admin.jigsaw() } catch (e) { /* 非管理员忽略 */ }
+  try { coalition.value = await admin.coalition() } catch (e) { /* 同上 */ }
 }
 const dlg = reactive({ open: false, form: { id: '', username: '', display_name: '', password: '', dept_id: '', roles: [], clearance: 1, status: true, reason: '' } })
 const levelType = (c) => ({ 0: 'success', 1: 'info', 2: 'warning', 3: 'danger' }[c] || 'info')

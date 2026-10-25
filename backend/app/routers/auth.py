@@ -465,11 +465,22 @@ def oidc_callback(request: Request, code: str = "", state: str = "",
                 bits.append("收回角色 " + "/".join(sync["roles_removed"]))
             if sync["clearance_from"] != sync["clearance_to"]:
                 bits.append(f"密级 {sync['clearance_from']}→{sync['clearance_to']}")
+            if not bits:
+                # 只有溯源记录变化（密级值没变）：写清楚是哪一档基线被记下，
+                # 否则审计里会出现一条"同步："后面什么都没有的空记录。
+                bits.append(
+                    f"密级溯源 baseline={sync.get('clearance_base')}"
+                    f" synced={sync.get('clearance_synced')}"
+                    f" mode={sync.get('clearance_mode')}")
             write_log(db, user=user, action="idp_claim_sync", decision="allow",
                       target_id=user.id, target_label=user.username,
                       reason="IdP claim 同步：" + "；".join(bits),
-                      detail=json.dumps({"claim_roles": sync.get("claim_roles", [])},
-                                        ensure_ascii=False),
+                      detail=json.dumps({
+                          "claim_roles": sync.get("claim_roles", []),
+                          "clearance_mode": sync.get("clearance_mode"),
+                          "clearance_base": sync.get("clearance_base"),
+                          "clearance_synced": sync.get("clearance_synced"),
+                      }, ensure_ascii=False),
                       ip=ip)
     except oidc.OidcError as exc:
         logger.warning("OIDC 回调失败 code=%s detail=%s", exc.code, exc.detail)

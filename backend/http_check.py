@@ -221,8 +221,15 @@ check("全篇直读达到上限后被限流", codes.count(429) >= 1, f"codes={co
 tk = login("admin", "Admin@123")
 board = c.get("/api/admin/jigsaw", headers=auth(tk)).json()
 check("管理端拼图风险榜可查", isinstance(board, list) and len(board) >= 1, f"{len(board)} 条")
+coal = c.get("/api/admin/jigsaw/coalition", headers=auth(tk)).json()
+check("跨账号合谋检出接口可用（只读列表）", isinstance(coal, list), f"{len(coal)} 条")
+tk_plain = login("wealth01")
+check("合谋检出仅管理员可见（普通用户 403）",
+      c.get("/api/admin/jigsaw/coalition", headers=auth(tk_plain)).status_code == 403)
 st = c.get("/api/admin/stats", headers=auth(tk)).json()
 check("统计含防拼图高危数", st.get("jigsaw_risk", 0) >= 1, f"jigsaw_risk={st.get('jigsaw_risk')}")
+check("统计含合谋检出计数", isinstance(st.get("jigsaw_coalition"), int),
+      f"jigsaw_coalition={st.get('jigsaw_coalition')}")
 check("统计含意图阻断/降级口径", "blocked_7d" in st, f"blocked_7d={st.get('blocked_7d')}")
 
 logs = audit_wait({"decision": "throttle", "limit": 100}, 1, headers=auth(tk))

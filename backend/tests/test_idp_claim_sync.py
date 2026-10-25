@@ -44,6 +44,7 @@ def sync_on(monkeypatch):
     monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_MAX_CLEARANCE", 1)
     monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_ALLOW_ADMIN", False)
     monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_UNKNOWN", "ignore")
+    monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_MODE", "union")
     return None
 
 
@@ -204,6 +205,100 @@ def test_clearance_claim_disabled_by_empty_config(db, user, sync_on, monkeypatch
     monkeypatch.setattr(config, "OIDC_CLEARANCE_CLAIM", "")
     out = idp_sync.apply(db, user, {"clearance": "secret", "roles": ["fin_research"]})
     assert out["clearance_to"] == 1 and out["changed"] is False
+
+
+# ------------------------------------------------- 密级撤权口径（authoritative）
+
+@pytest.fixture
+def authoritative(monkeypatch):
+    """IdP 权威模式：允许 claim 撤权，但只回落本地基线。"""
+    monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_MODE", "authoritative")
+    monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_MAX_CLEARANCE", 2)
+    return None
+
+
+def test_authoritative_revokes_back_to_local_baseline(db, user, sync_on, authoritative):
+    """IdP 先抬到机密、再调回内部 → 撤权必须生效（旧的只升不降做不到）。"""
+    idp_sync.apply(db, user, {"clearance": "confidential"})
+    db.refresh(user)
+    assert user.clearance == 2
+    assert (user.idp_clearance_base, user.idp_clearance_synced) == (1, 2)
+
+    out = idp_sync.apply(db, user, {"clearance": "internal"})
+    db.refresh(user)
+    assert out["changed"] is True
+    assert user.clearance == 1
+    assert user.idp_clearance_synced == 1
+    assert user.idp_clearance_base == 1
+
+
+def test_authoritative_never_drops_below_local_baseline(db, user, sync_on, authoritative):
+    """防：IdP 发 public 就把本地原本授的内部级抹成公开。"""
+    out = idp_sync.apply(db, user, {"clearance": "public"})
+    db.refresh(user)
+    assert user.clearance == 1          # 基线 1 压住，不被降级
+    assert out["changed"] is False
+
+
+def test_authoritative_keeps_locally_raised_clearance(db, user, sync_on, authoritative):
+    """防：本地管理员按审批授了绝密，被 IdP 一次误配抹掉。
+
+    同步只把 1 抬到 2；本地随后改到 3 → 新基线是 3，IdP 再发 public
+    也只能停在 3（本地改过就重新定调，不能被 IdP 覆盖）。
+    """
+    idp_sync.apply(db, user, {"clearance": "confidential"})
+    db.refresh(user)
+    user.clearance = 3                 # 本地审批提级
+    db.commit()
+
+    out = idp_sync.apply(db, user, {"clearance": "public"})
+    db.refresh(user)
+    assert user.clearance == 3
+    assert user.idp_clearance_base == 3
+    assert out["clearance_from"] == 3 and out["clearance_to"] == 3
+
+
+def test_authoritative_downgrade_is_audited_as_change(db, user, sync_on, authoritative):
+    """撤权是权限变动，必须留下 diff（审计靠 changed 判断要不要写）。"""
+    idp_sync.apply(db, user, {"clearance": "confidential"})
+    db.refresh(user)
+    out = idp_sync.apply(db, user, {"clearance": "public"})
+    assert out["changed"] is True
+    assert out["clearance_mode"] == "authoritative"
+    assert out["clearance_from"] == 2 and out["clearance_to"] == 1
+
+
+def test_provenance_only_change_is_not_reported_in_union_mode(db, user, sync_on):
+    """空跑不产生审计噪音：claim 值本来就等于本地值 → 不记溯源、不报变化。"""
+    out = idp_sync.apply(db, user, {"clearance": "internal"})
+    db.refresh(user)
+    assert out["changed"] is False
+    assert out["clearance_base"] is None and out["clearance_synced"] is None
+    assert (user.idp_clearance_base, user.idp_clearance_synced) == (-1, 0)
+
+
+def test_provenance_recorded_when_claim_elevates(db, user, sync_on, monkeypatch):
+    monkeypatch.setattr(config, "OIDC_CLAIM_SYNC_MAX_CLEARANCE", 2)
+    out = idp_sync.apply(db, user, {"clearance": "confidential"})
+    db.refresh(user)
+    assert out["clearance_base"] == 1 and out["clearance_synced"] == 2
+    assert (user.idp_clearance_base, user.idp_clearance_synced) == (1, 2)
+
+
+def test_clearance_base_resets_when_local_edit_detected(db, user, sync_on, authoritative):
+    """本地改过密级（当前值 ≠ max(基线, 上次同步值)）→ 以当前值为新基线。
+
+    否则本地降级之后 IdP 撤权会把"基线"算错（凭旧的 2 顶着不让降）。
+    """
+    idp_sync.apply(db, user, {"clearance": "confidential"})
+    db.refresh(user)
+    user.clearance = 1                 # 本地审批降回内部
+    db.commit()
+
+    assert idp_sync._clearance_base(user) == 1
+    out = idp_sync.apply(db, user, {"clearance": "public"})
+    db.refresh(user)
+    assert user.clearance == 1 and out["changed"] is True   # 基线重置已留痕
 
 
 # ---------------------------------------------------------------- 映射解析

@@ -38,13 +38,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import (
-    JIGSAW_ADMIN_EXEMPT, JIGSAW_DOC_COVER_STOP, JIGSAW_DOC_COVER_WARN,
+    JIGSAW_ADMIN_EXEMPT, JIGSAW_COALITION_COVER, JIGSAW_COALITION_ENABLED,
+    JIGSAW_COALITION_MIN_USERS, JIGSAW_DOC_COVER_STOP, JIGSAW_DOC_COVER_WARN,
     JIGSAW_ENABLED, JIGSAW_FULLREAD_LIMIT, JIGSAW_LONG_DOC_CHAR,
     JIGSAW_LONG_USER_CHAR, JIGSAW_LONG_WINDOW_DAYS, JIGSAW_MAX_CHUNKS_PER_DOC,
     JIGSAW_MAX_PER_TURN, JIGSAW_MIN_DOC_CHUNKS, JIGSAW_RISK_READONLY,
     JIGSAW_USER_CHAR_LIMIT, JIGSAW_USER_DOC_LIMIT, JIGSAW_WINDOW_HOURS,
 )
-from .models import Chunk, ExposureLedger, User
+from .models import Chunk, Document, ExposureLedger, User
 
 SEEN_DETAIL_CAP = 3000      # 明细存储上限，超出后仅保留计数
 _ORDER = {"none": 0, "warn": 1, "restrict": 2, "block": 3}
@@ -437,3 +438,86 @@ def risk_board(db: Session, limit: int = 20) -> list[dict]:
         })
     out.sort(key=lambda x: (-x["coverage"], -x["chars"]))
     return [o for o in out if o["risk"] != "low"][:limit]
+
+
+def coalition_alerts(db: Session, limit: int = 20) -> list[dict]:
+    """跨账号合谋拼图**检出**（不是拦截）。
+
+    单账号账本按定义挡不住合谋：N 个低权限账号各取一块、线下合并，
+    每个人单独看都"没越权、覆盖率不高"，并集却逼近全文。这里按长窗口
+    （JIGSAW_LONG_WINDOW_DAYS）聚合**多个账号对同一篇文档**的已见切片
+    并集，并集覆盖率超线即报警给管理端。
+
+    刻意只做检出、不做自动处置：热门文档被很多同事正常阅读时并集天然
+    很高，自动封禁会把正常业务打死；正确出口是人工复核（安全运营能拿到
+    "哪几个人、哪篇文档、拼到了多少"这一手证据）。
+
+    明细被 SEEN_DETAIL_CAP 截断时无法算精确并集，用 seen_count 之和作为
+    上界提示（标记 approx=True），不伪造精确覆盖率。
+    """
+    if not JIGSAW_COALITION_ENABLED:
+        return []
+    keys = long_window_keys(max(1, JIGSAW_LONG_WINDOW_DAYS))
+    rows = db.execute(
+        select(ExposureLedger.doc_id, ExposureLedger.user_id,
+               ExposureLedger.seen_chunks, ExposureLedger.seen_count,
+               ExposureLedger.char_total).where(ExposureLedger.window_key.in_(keys))
+    ).all()
+    per_doc: dict[str, dict] = {}
+    for doc_id, user_id, seen_chunks, seen_count, chars in rows:
+        bucket = per_doc.setdefault(doc_id, {"users": {}, "approx": False})
+        try:
+            seen = set(json.loads(seen_chunks or "[]"))
+        except Exception:
+            seen = set()
+        if not seen and int(seen_count or 0) > 0:
+            # 明细被截断：只能用计数值，标记近似
+            bucket["approx"] = True
+        bucket["users"].setdefault(user_id, {"chunks": set(), "seen": 0, "chars": 0})
+        entry = bucket["users"][user_id]
+        entry["chunks"] |= seen
+        entry["seen"] += int(seen_count or 0)
+        entry["chars"] += int(chars or 0)
+
+    alerts = []
+    for doc_id, bucket in per_doc.items():
+        users = bucket["users"]
+        if len(users) < max(2, JIGSAW_COALITION_MIN_USERS):
+            continue
+        total = _doc_chunk_total(db, doc_id)
+        if total <= 0:
+            continue
+        union: set[str] = set()
+        for entry in users.values():
+            union |= entry["chunks"]
+        # 明细不全时不要用并集/总数冒充覆盖率：给出上界（各账号条数之和）
+        approx = bucket["approx"] or any(not e["chunks"] for e in users.values())
+        cov = min(1.0, sum(e["seen"] for e in users.values()) / total) if approx \
+            else len(union) / total
+        if cov < JIGSAW_COALITION_COVER:
+            continue
+        doc = db.get(Document, doc_id)
+        ranked = sorted(users.items(), key=lambda kv: -kv[1]["seen"])[:10]
+        members = []
+        for uid, entry in ranked:
+            u = db.get(User, uid)
+            members.append({
+                "user_id": uid,
+                "username": u.username if u else "(已删除)",
+                "seen": entry["seen"],
+                "chars": entry["chars"],
+            })
+        alerts.append({
+            "doc_id": doc_id,
+            "doc_title": doc.title if doc else "(已删除)",
+            "users": len(users),
+            "union_seen": len(union),
+            "total": total,
+            "coverage": round(cov, 3),
+            "approx": approx,
+            "members": members,
+            "window_days": max(1, JIGSAW_LONG_WINDOW_DAYS),
+            "threshold": JIGSAW_COALITION_COVER,
+        })
+    alerts.sort(key=lambda a: (-a["coverage"], -a["users"]))
+    return alerts[:limit]

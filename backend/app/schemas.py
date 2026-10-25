@@ -193,6 +193,7 @@ class StatsOut(BaseModel):
     denied_7d: int | None = None
     throttled_7d: int | None = None
     jigsaw_risk: int | None = None
+    jigsaw_coalition: int | None = None
     blocked_7d: int | None = None
     storage: str = ""
     llm_mode: str = ""
