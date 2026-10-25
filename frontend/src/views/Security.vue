@@ -74,14 +74,56 @@
     </div>
 
     <RecoveryCodesDialog v-model="rcDialog" :codes="rcCodes" />
+
+    <!-- P0-4：登录设备（服务端会话表）。空闲超时由服务端判定，这里只做展示
+         与"单端/全端下线"的入口——前端不需要知道超时分钟数。 -->
+    <div class="blk">
+      <div class="step">登录设备（会话）</div>
+      <div class="muted">
+        会话在服务端登记，长时间无操作会自动失效；发现陌生设备请立即踢掉并改密。
+      </div>
+      <el-table :data="sessions" size="small" style="margin-top:10px"
+                empty-text="暂无其它有效会话">
+        <el-table-column label="登录时间" width="150">
+          <template #default="{ row }">{{ row.created_at }}</template>
+        </el-table-column>
+        <el-table-column label="最近活动" width="150">
+          <template #default="{ row }">{{ row.last_seen_at }}</template>
+        </el-table-column>
+        <el-table-column prop="ip" label="来源 IP" width="130" />
+        <el-table-column label="客户端" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.user_agent || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.current" size="small" type="success">本机</el-tag>
+            <el-button v-else link type="danger" size="small" :loading="busy"
+                       @click="kick(row)">踢出</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="row" style="margin-top:10px">
+        <el-button :loading="busy" @click="loadSessions">刷新设备列表</el-button>
+        <el-button type="danger" plain :loading="busy" @click="logoutAll">
+          退出全部设备
+        </el-button>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        "退出全部设备"还会让已签发的令牌整体换代次，适合手机丢失或怀疑泄露时使用。
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auth } from '../api'
+import { clearSession, setUser } from '../session'
 import RecoveryCodesDialog from '../components/RecoveryCodesDialog.vue'
+
+const router = useRouter()
 
 const me = ref(null)
 const pw = ref('')
@@ -95,10 +137,42 @@ const busy = ref(false)
 const rcPw = ref('')
 const rcCodes = ref([])
 const rcDialog = ref(false)
+// P0-4 登录设备
+const sessions = ref([])
 
 async function load() {
   me.value = await auth.me()
-  localStorage.setItem('finrag_user', JSON.stringify(me.value))
+  setUser(me.value)
+  await loadSessions()
+}
+
+async function loadSessions() {
+  try { sessions.value = await auth.sessions() } catch (e) { sessions.value = [] }
+}
+
+async function kick(row) {
+  busy.value = true
+  try {
+    await auth.revokeSession(row.id)
+    ElMessage.success('该设备已下线')
+    await loadSessions()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '操作失败')
+  } finally { busy.value = false }
+}
+
+async function logoutAll() {
+  busy.value = true
+  try {
+    await auth.logoutAll()
+    clearSession()
+    ElMessage.success('已退出全部设备')
+    router.push('/login')
+    location.reload()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '操作失败')
+    busy.value = false
+  }
 }
 
 onMounted(load)

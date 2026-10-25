@@ -7,18 +7,19 @@
 | 项 | 值 |
 | --- | --- |
 | 生成命令 | `D:/workspace/python/python.exe scripts/generate_third_party_notices.py`（在仓库根目录执行；脚本路径按自身位置解析，不依赖 cwd） |
-| 数据来源 | 后端：`backend/requirements-lock.txt`（53 个固定版本包）+ `backend/requirements.txt`（声明口径差额核对）；前端：`frontend/package-lock.json`（npm lockfileVersion 3，128 个包） |
+| 数据来源 | 后端：`backend/requirements-lock.txt`（56 个固定版本包）+ `backend/requirements.txt`（声明口径差额核对）；前端：`frontend/package-lock.json`（npm lockfileVersion 3，128 个包） |
 | 许可解析口径 | 后端：本机 `importlib.metadata`（License-Expression → License 自由文本 → License 分类器），本机未装/无许可字段时查 `scripts/third_party_licenses.json` override 表；前端：lock 条目 `license` 字段 → `frontend/node_modules/<pkg>/package.json` → override 表 |
-| 生成时间 | 2026-10-20 00:39:33 +0800（本机时区） |
+| 生成时间 | 2026-10-25 01:53:54 +0800（本机时区） |
 | 必须重跑本脚本的时机 | ① 升级/更换任何依赖后；② 修改 `backend/requirements-lock.txt`、`backend/requirements.txt`、`frontend/package-lock.json` 任一后；③ 切换 Python 版本或操作系统后（本机 metadata 口径会变）；④ 更新 `scripts/third_party_licenses.json` 后。依赖未变时重跑，除“生成时间”行外输出应完全一致 |
 | 异常许可计数 | 弱传染（MPL/LGPL 等）：3 条；强传染/商业/未知（GPL/AGPL/SSPL/COMMERCIAL/UNKNOWN）：0 条 |
 
-## 一、后端依赖（`requirements-lock.txt` 全部，53 个）
+## 一、后端依赖（`requirements-lock.txt` 全部，56 个）
 
 锁文件未按“运行/测试”显式分组，其文件头亦声明“锁文件同时服务运行环境与测试环境，避免能跑不能测”，故本表列全部包。其中测试链路为 pytest 及其传递依赖（pytest / pluggy / iniconfig；packaging 同时是 onnxruntime 的运行期传递依赖，故不做强行拆分）。
 
 | Package | Version | License | 来源 |
 | --- | --- | --- | --- |
+| alembic | 1.20.1 | MIT | metadata |
 | annotated-doc | 0.0.5 | MIT | metadata |
 | annotated-types | 0.8.0 | MIT | metadata |
 | anyio | 4.15.1 | MIT | metadata |
@@ -30,16 +31,18 @@
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | metadata |
 | et_xmlfile | 2.0.0 | MIT | metadata |
 | fastapi | 0.143.1 | MIT | metadata |
-| flatbuffers | 25.12.19 | Apache-2.0 | override |
+| flatbuffers | 25.12.19 | Apache 2.0 | metadata |
 | h11 | 0.16.0 | MIT | metadata |
 | httpcore | 1.0.9 | BSD-3-Clause | metadata |
 | httpx | 0.28.1 | BSD-3-Clause | metadata |
 | idna | 3.20 | BSD-3-Clause | metadata |
 | iniconfig | 2.3.1 | MIT | metadata |
 | lxml | 6.1.3 | BSD-3-Clause | metadata |
-| numpy | 2.5.4 | BSD-3-Clause | override |
-| onnxruntime | 1.31.0 | MIT | override |
-| opencv-python | 5.0.0.93 | Apache-2.0 | override |
+| mako | 1.4.3 | MIT | metadata |
+| markupsafe | 3.0.4 | BSD-3-Clause | metadata |
+| numpy | 2.5.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | metadata |
+| onnxruntime | 1.31.0 | MIT License | metadata |
+| opencv-python | 5.0.0.93 | Apache 2.0 | metadata |
 | openpyxl | 3.1.5 | MIT | metadata |
 | opentelemetry-api | 1.45.1 | Apache-2.0 | metadata |
 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | metadata |
@@ -48,10 +51,10 @@
 | pgvector | 0.5.1 | MIT | metadata |
 | pillow | 12.3.0 | MIT-CMU | metadata |
 | pluggy | 1.7.0 | MIT | metadata |
-| protobuf | 7.36.2 | BSD-3-Clause | override |
-| psycopg | 3.3.6 | LGPL-3.0-only | override |
-| psycopg-binary | 3.3.6 | LGPL-3.0-only | override |
-| pyclipper | 1.4.0 | MIT | override |
+| protobuf | 7.36.2 | 3-Clause BSD License | metadata |
+| psycopg | 3.3.6 | LGPL-3.0-only | metadata |
+| psycopg-binary | 3.3.6 | LGPL-3.0-only | metadata |
+| pyclipper | 1.4.0 | MIT | metadata |
 | pycparser | 3.11 | BSD-3-Clause | metadata |
 | pydantic | 2.14.1 | MIT | metadata |
 | pydantic_core | 2.50.1 | MIT | metadata |
@@ -62,10 +65,10 @@
 | pytest | 9.1.1 | MIT | metadata |
 | python-docx | 1.2.0 | MIT | metadata |
 | python-multipart | 0.0.32 | Apache-2.0 | metadata |
-| PyYAML | 6.0.3 | MIT | override |
-| rapidocr-onnxruntime | 1.2.3 | Apache-2.0 | override |
-| shapely | 2.2.0 | BSD-3-Clause | override |
-| six | 1.17.0 | MIT | override |
+| PyYAML | 6.0.3 | MIT | metadata |
+| rapidocr-onnxruntime | 1.2.3 | Apache-2.0 | metadata |
+| shapely | 2.2.0 | BSD-3-Clause | metadata |
+| six | 1.17.0 | MIT | metadata |
 | SQLAlchemy | 2.1.4 | MIT | metadata |
 | starlette | 1.8.0 | BSD-3-Clause | metadata |
 | typing_extensions | 4.16.0 | PSF-2.0 | metadata |
@@ -79,7 +82,7 @@
 | --- | --- | --- | --- |
 | （无差额条目） | — | — | — |
 
-核对结论：`backend/requirements.txt` 声明的 17 个直接依赖（PyJWT, fastapi, httpx, openpyxl, pdfplumber, pgvector, psycopg, pydantic, pypdf, pypdfium2, pytest, python-docx, python-multipart, rapidocr-onnxruntime, sqlalchemy, tzdata, uvicorn）均已在 `backend/requirements-lock.txt` 中固定版本，差额为 **0**。（`psycopg[binary]` extra 对应锁文件中的 `psycopg==3.3.6` 与 `psycopg-binary==3.3.6` 两条。）
+核对结论：`backend/requirements.txt` 声明的 19 个直接依赖（PyJWT, alembic, cryptography, fastapi, httpx, openpyxl, pdfplumber, pgvector, psycopg, pydantic, pypdf, pypdfium2, pytest, python-docx, python-multipart, rapidocr-onnxruntime, sqlalchemy, tzdata, uvicorn）均已在 `backend/requirements-lock.txt` 中固定版本，差额为 **0**。（`psycopg[binary]` extra 对应锁文件中的 `psycopg==3.3.6` 与 `psycopg-binary==3.3.6` 两条。）
 
 ## 三、前端依赖（`frontend/package-lock.json`，128 个）
 
@@ -244,15 +247,5 @@
 
 | Package | License | verified_from |
 | --- | --- | --- |
-| flatbuffers | Apache-2.0 | PyPI flatbuffers 25.12.19 JSON API（与锁文件版本一致）, 2026-10-20 |
-| numpy | BSD-3-Clause | PyPI numpy 2.5.4 JSON API + numpy.org 许可页, 2026-10-20 |
-| onnxruntime | MIT | PyPI onnxruntime JSON API, 2026-10-20 |
-| opencv-python | Apache-2.0 | PyPI opencv-python 5.0.0.93 JSON API（与锁文件版本一致，且为当前最新版）, 2026-10-20 |
-| protobuf | BSD-3-Clause | PyPI protobuf 7.36.2 JSON API（与锁文件版本一致）, 2026-10-20 |
-| psycopg | LGPL-3.0-only | PyPI psycopg 3.3.6 JSON API（license_expression=LGPL-3.0-only，与锁文件版本一致）, 2026-10-20 |
-| psycopg-binary | LGPL-3.0-only | PyPI psycopg-binary 3.3.6 JSON API（license_expression=LGPL-3.0-only，与锁文件版本一致）, 2026-10-20 |
-| pyclipper | MIT | PyPI pyclipper JSON API, 2026-10-20 |
-| PyYAML | MIT | PyPI PyYAML JSON API, 2026-10-20 |
-| rapidocr-onnxruntime | Apache-2.0 | PyPI rapidocr-onnxruntime 1.2.3 JSON API（与锁文件版本一致）, 2026-10-20 |
-| shapely | BSD-3-Clause | PyPI shapely 2.2.0 + shapely.readthedocs.io 许可页（与锁文件版本一致）, 2026-10-20 |
-| six | MIT | PyPI six JSON API, 2026-10-20 |
+
+注：override 表中以下条目本次未被使用（依赖已消失或已可本地解析），可清理：flatbuffers, numpy, onnxruntime, opencv-python, protobuf, psycopg, psycopg-binary, pyclipper, pyyaml, rapidocr-onnxruntime, shapely, six

@@ -14,16 +14,19 @@ from .. import config as cfg
 from .. import idp_sync, oidc, recovery, totp
 from ..audit import write_log
 from ..db import get_db
+from ..httpguard import is_https
 from ..loginthrottle import is_locked, record_failure, record_success
-from ..models import User
+from ..models import AuthSession, User
 from ..password_policy import PasswordPolicyError, validate_password
 from ..schemas import (
     ChangePasswordIn, LoginIn, MfaLoginIn, RecoveryRegenerateIn, TotpConfirmIn,
     TotpDisableIn, TotpSetupIn,
 )
 from ..security import (
-    create_mfa_challenge, create_token, current_user, decode_purpose,
-    hash_password, needs_rehash, verify_password,
+    active_sessions, check_session, clear_session_cookies, create_mfa_challenge,
+    create_token, current_user, decode_purpose, hash_password, needs_rehash,
+    open_session, revoke_session, revoke_user_sessions, set_session_cookies,
+    verify_password,
 )
 from ..serializers import user_out
 
@@ -43,7 +46,8 @@ def client_ip(request: Request) -> str:
 
 
 def _secure_cookie(request: Request) -> bool:
-    return request.url.scheme == "https"
+    """OIDC state/handoff Cookie 的 Secure 判定——与 HSTS/会话 Cookie 同口径。"""
+    return is_https(request)
 
 
 def _mfa_locked_response(username: str, remaining: int) -> JSONResponse:
@@ -55,11 +59,42 @@ def _mfa_locked_response(username: str, remaining: int) -> JSONResponse:
     )
 
 
-def _issue_session(db: Session, user: User, reason: str, ip: str) -> dict:
-    """口令（+动态口令）都通过后的统一收口：签发会话并留痕。"""
+def _issue_session(db: Session, user: User, reason: str, ip: str,
+                   request: Request | None = None) -> tuple[dict, str]:
+    """口令（+动态口令）都通过后的统一收口：签发会话并留痕。
+
+    P0-4：令牌绑定服务端会话（空闲超时 / 单端吊销）。
+    P0-2：AUTH_COOKIE_MODE=true 时不回传令牌，改种 HttpOnly Cookie + CSRF Cookie。
+    """
     write_log(db, user=user, action="login", decision="allow", reason=reason, ip=ip)
-    return {"token": create_token(user), "user": user_out(db, user),
-            "must_change_password": bool(user.must_change_password)}
+    sess = open_session(db, user, ip=ip,
+                        ua=(request.headers.get("user-agent", "") if request else ""))
+    token = create_token(user, sess.sid)
+    body = {"user": user_out(db, user),
+            "must_change_password": bool(user.must_change_password),
+            "session_id": sess.sid}
+    if cfg.AUTH_COOKIE_MODE:
+        body["token"] = None
+        body["csrf_required"] = True
+    else:
+        body["token"] = token
+    return body, token
+
+
+def _session_json(payload: dict, token: str, request: Request) -> JSONResponse:
+    """把会话载荷包成响应；Cookie 模式下种 HttpOnly + CSRF Cookie。"""
+    resp = JSONResponse(payload)
+    if cfg.AUTH_COOKIE_MODE:
+        csrf = set_session_cookies(resp, request, token)
+        resp.headers["X-CSRF-Token"] = csrf
+    return resp
+
+
+def _session_response(db: Session, user: User, reason: str, ip: str,
+                      request: Request) -> JSONResponse:
+    """同 `_issue_session`，但直接产出响应以便种 Cookie（含 CSRF）。"""
+    payload, token = _issue_session(db, user, reason, ip, request)
+    return _session_json(payload, token, request)
 
 
 @router.get("/providers")
@@ -126,11 +161,11 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
                   ip=ip)
         return {"mfa_required": True, "challenge": create_mfa_challenge(user),
                 "expires_in": cfg.MFA_CHALLENGE_MINUTES * 60}
-    return _issue_session(
+    return _session_response(
         db, user,
         f"密级 {user.clearance}"
         + ("；首次登录须修改初始口令" if user.must_change_password else ""),
-        ip)
+        ip, request)
 
 
 @router.post("/login/mfa")
@@ -178,8 +213,8 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
                   reason=f"口令+恢复码登录（剩余恢复码 {left} 个）"
                          + ("；首次登录须修改初始口令" if user.must_change_password else ""),
                   ip=ip)
-        body_out = _issue_session(
-            db, user, f"口令+恢复码通过（剩余恢复码 {left} 个）", ip)
+        body_out, token = _issue_session(
+            db, user, f"口令+恢复码通过（剩余恢复码 {left} 个）", ip, request)
         body_out["recovery_codes_remaining"] = left
         if left == 0:
             # 最后一个码也用掉了：必须明确告知"下次只能找管理员"，否则用户
@@ -190,7 +225,7 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
         elif left <= 2:
             body_out["recovery_warning"] = (
                 f"仅剩 {left} 个恢复码，请尽快在安全设置中重新生成")
-        return body_out
+        return _session_json(body_out, token, request)
 
     try:
         secret = totp.unseal(user.totp_secret)
@@ -215,11 +250,11 @@ def login_mfa(body: MfaLoginIn, request: Request, db: Session = Depends(get_db))
     # 记录已用步长：同一口令在有效窗口内不能重放（RFC 6238 §5.2）
     user.totp_last_step = int(step)
     db.commit()
-    return _issue_session(
+    return _session_response(
         db, user,
         f"口令+动态口令双因子通过（密级 {user.clearance}）"
         + ("；首次登录须修改初始口令" if user.must_change_password else ""),
-        ip)
+        ip, request)
 
 
 @router.post("/totp/setup")
@@ -467,11 +502,18 @@ def oidc_session(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话已失效，请重新登录")
     write_log(db, user=user, action="login_sso", decision="allow",
               reason="单点登录交接票据换取会话", ip=client_ip(request))
-    resp = JSONResponse({
-        "token": create_token(user),
+    sess = open_session(db, user, ip=client_ip(request),
+                        ua=request.headers.get("user-agent", ""))
+    token = create_token(user, sess.sid)
+    payload = {
         "user": user_out(db, user),
         "must_change_password": bool(user.must_change_password),
-    })
+        "session_id": sess.sid,
+        "token": None if cfg.AUTH_COOKIE_MODE else token,
+    }
+    if cfg.AUTH_COOKIE_MODE:
+        payload["csrf_required"] = True
+    resp = _session_json(payload, token, request)
     resp.delete_cookie(OIDC_HANDOFF_COOKIE, path="/")
     return resp
 
@@ -502,11 +544,19 @@ def change_password(body: ChangePasswordIn, request: Request,
     user.must_change_password = False
     user.token_version = int(user.token_version or 0) + 1
     db.commit()
+    # 改密后**所有**旧会话一律吊销（含当前这条：它对应的令牌已随代次失效），
+    # 随后为当前设备重开一条新会话——这样"我的设备"列表里不会残留已死会话。
+    revoked = revoke_user_sessions(db, user.id, reason="password_changed")
     write_log(db, user=user, action="change_password", decision="allow",
               reason=("首次登录完成强制改密" if was_forced else "主动修改口令")
               + "，旧会话已全部失效", ip=ip)
-    return {"token": create_token(user), "user": user_out(db, user),
-            "must_change_password": False}
+    sess = open_session(db, user, ip=ip, ua=request.headers.get("user-agent", ""))
+    token = create_token(user, sess.sid)
+    payload = {"user": user_out(db, user), "must_change_password": False,
+               "session_id": sess.sid,
+               "revoked_sessions": revoked,
+               "token": None if cfg.AUTH_COOKIE_MODE else token}
+    return _session_json(payload, token, request)
 
 
 @router.get("/me")
@@ -514,13 +564,68 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
     return user_out(db, user)
 
 
+def _session_out(row) -> dict:
+    return {
+        "id": row.sid,
+        "created_at": row.created_at.strftime("%Y-%m-%d %H:%M:%S") if row.created_at else "",
+        "last_seen_at": row.last_seen_at.strftime("%Y-%m-%d %H:%M:%S") if row.last_seen_at else "",
+        "ip": row.ip or "",
+        "user_agent": row.user_agent or "",
+        "current": False,
+    }
+
+
+@router.get("/sessions")
+def my_sessions(request: Request, user: User = Depends(current_user),
+                db: Session = Depends(get_db)):
+    """当前账号的有效登录设备（供"发现陌生设备→踢掉"）。"""
+    cur = getattr(request.state, "sid", None)
+    rows = [_session_out(r) for r in active_sessions(db, user)]
+    for r in rows:
+        r["current"] = bool(cur and r["id"] == cur)
+    return rows
+
+
+@router.post("/sessions/{sid}/revoke")
+def revoke_my_session(sid: str, request: Request,
+                      user: User = Depends(current_user),
+                      db: Session = Depends(get_db)):
+    """踢掉自己的某一台设备（单端吊销）。他人的会话只能由管理员踢。"""
+    row = db.get(AuthSession, sid)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+    revoke_session(db, sid, reason="user_revoked")
+    write_log(db, user=user, action="session_revoke", decision="allow",
+              target_label=sid, reason="用户主动吊销该设备会话",
+              ip=client_ip(request))
+    return {"ok": True}
+
+
 @router.post("/logout")
 def logout(request: Request, user: User = Depends(current_user),
            db: Session = Depends(get_db)):
-    # 登出也换代次：本项目没有令牌黑名单存储，用"全端下线"换取
-    # "登出即真失效"。单端精确吊销需要 jti 表，属后续增强。
+    """登出：只吊销当前这台设备的会话，其余设备不受影响（P0-4 单端语义）。
+
+    需要"全部设备下线"时调用 /auth/logout/all（会换代次 token_version）。
+    """
+    sid = getattr(request.state, "sid", None)
+    revoke_session(db, sid, reason="logout") if sid else None
+    write_log(db, user=user, action="logout", decision="allow",
+              ip=client_ip(request))
+    resp = JSONResponse({"ok": True})
+    clear_session_cookies(resp)
+    return resp
+
+
+@router.post("/logout/all")
+def logout_all(request: Request, user: User = Depends(current_user),
+               db: Session = Depends(get_db)):
+    """全部设备下线（令牌换代次 + 会话表批量吊销）。"""
+    n = revoke_user_sessions(db, user.id, reason="logout_all")
     user.token_version = int(user.token_version or 0) + 1
     db.commit()
     write_log(db, user=user, action="logout", decision="allow",
-              ip=client_ip(request))
-    return {"ok": True}
+              reason=f"全部设备下线（吊销 {n} 个会话）", ip=client_ip(request))
+    resp = JSONResponse({"ok": True, "revoked": n})
+    clear_session_cookies(resp)
+    return resp

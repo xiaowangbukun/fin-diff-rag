@@ -113,6 +113,28 @@ class User(Base):
             return []
 
 
+class AuthSession(Base):
+    """服务端会话（P0-4）：空闲超时与单端吊销的事实来源。
+
+    没有这张表时，"踢掉某一台设备"和"离开工位自动失效"都做不到：
+    令牌一旦签发就只能等 12 小时自然过期，或者把整个账号所有设备一起踢
+    （token_version）。令牌里的 sid 指向本表主键。
+
+    只存会话元数据，不存令牌本身——库泄露不能直接换取会话。
+    """
+    __tablename__ = "auth_sessions"
+    sid: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    username: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 吊销时刻非空即失效（登出 / 管理员踢端 / 改密后批量吊销）
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(64), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(255), default="")
+
+
 class Document(Base):
     __tablename__ = "documents"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -211,8 +233,13 @@ class ApprovalRequest(Base):
     """
     __tablename__ = "approval_requests"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # doc_id 是"审批对象 id"（列名为历史兼容）：subject_type=document 时是文档
+    # id，subject_type=user 时是用户 id。加 subject_type 是为了让用户权限变更
+    # 与文档变更共用同一条审批流（同一张表=同一份审计口径），同时不必为
+    # 两种对象各写一套列表/裁决逻辑。
     doc_id: Mapped[str] = mapped_column(String(36), index=True)
-    kind: Mapped[str] = mapped_column(String(16), default="clearance")  # clearance/acl/acl_grant
+    subject_type: Mapped[str] = mapped_column(String(16), default="document")
+    kind: Mapped[str] = mapped_column(String(16), default="clearance")  # clearance/acl/acl_grant/user_privilege
     # 展示用的"从 → 到"。acl_grant 要存 "user:<36 位 UUID>"（41 字符），
     # 32 会被 PG 拒写（StringDataRightTruncation）——展示列必须比业务值宽。
     from_value: Mapped[str] = mapped_column(String(160), default="")

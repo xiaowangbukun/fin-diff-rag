@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """对真实运行中的服务做一次 HTTP 端到端确认（非 TestClient，走真实端口与中间件）。
-覆盖：权限闸门 / 脱敏 / 防拼图 / 意图网关 / 切片级密级 / Fail-Secure / 元数据封堵。
+覆盖：权限闸门 / 脱敏 / 防拼图 / 意图网关 / 切片级密级 / Fail-Secure / 元数据封堵，
+以及 P0 安全边界：安全响应头 / 跨域预检 / 会话单端吊销 / 审计外置副本 / 审批队列。
 """
 import json
 import sys
@@ -228,6 +229,79 @@ logs = audit_wait({"decision": "throttle", "limit": 100}, 1, headers=auth(tk))
 check("防拼图拦截已留痕可筛", len(logs) >= 1, f"{len(logs)} 条")
 blk = audit_wait({"decision": "block", "limit": 100}, 1, headers=auth(tk))
 check("意图阻断已留痕可筛", len(blk) >= 1, f"{len(blk)} 条")
+
+# ---- P0-2 传输与浏览器边界 ----
+r = c.get("/api/health")
+h = {k.lower(): v for k, v in r.headers.items()}
+check("安全响应头默认开启（nosniff/DENY/no-referrer/CSP/no-store）",
+      h.get("x-content-type-options") == "nosniff"
+      and h.get("x-frame-options") == "DENY"
+      and h.get("referrer-policy") == "no-referrer"
+      and "content-security-policy" in h
+      and h.get("cache-control") == "no-store",
+      f"csp={'content-security-policy' in h}")
+r = c.options("/api/chat", headers={"Origin": "https://evil.example",
+                                    "Access-Control-Request-Method": "POST"})
+check("非白名单来源的跨域预检被拒（不给反向代理之外的浏览器放行）",
+      r.status_code == 403
+      and "access-control-allow-origin" not in {k.lower() for k in r.headers},
+      f"HTTP {r.status_code}")
+
+# ---- P0-4 会话：多端独立 + 单端吊销 + 全端下线 ----
+# 先把该账号历史遗留的活跃会话清掉：脚本跑在持久库上，上一轮登录的会话
+# 在空闲超时前仍然有效，否则"应是 1 个"会变成 N 个（断言随机失败）。
+c.post("/api/auth/logout/all", headers=auth(login("research01")))
+tk_a = login("research01")
+sess = c.get("/api/auth/sessions", headers=auth(tk_a)).json()
+check("会话列表可查且只有当前会话被标记 current",
+      isinstance(sess, list) and len(sess) == 1 and sess[0].get("current") is True,
+      f"{len(sess) if isinstance(sess, list) else sess} 个")
+tk_b = login("research01")
+sess = c.get("/api/auth/sessions", headers=auth(tk_b)).json()
+check("同一账号多端登录各自独立成会话（服务端可管）",
+      isinstance(sess, list) and len(sess) == 2
+      and sum(1 for s in sess if s.get("current")) == 1,
+      f"{len(sess) if isinstance(sess, list) else sess} 个")
+victim = next((s["id"] for s in sess if not s.get("current")), "")
+r = c.post(f"/api/auth/sessions/{victim}/revoke", headers=auth(tk_b))
+check("单端吊销接口可用", r.status_code == 200 and r.json().get("ok") is True,
+      f"HTTP {r.status_code}")
+check("被吊销设备的令牌立即失效", c.get("/api/auth/me", headers=auth(tk_a)).status_code == 401,
+      f"HTTP {c.get('/api/auth/me', headers=auth(tk_a)).status_code}")
+check("未被吊销的会话不受影响（单端语义，不是一刀切）",
+      c.get("/api/auth/me", headers=auth(tk_b)).status_code == 200)
+r = c.post("/api/auth/logout/all", headers=auth(tk_b))
+check("全部设备下线（令牌换代次 + 会话批量吊销）",
+      r.status_code == 200 and r.json().get("revoked", 0) >= 1,
+      f"revoked={r.json().get('revoked')}")
+check("下线后该令牌不再可用", c.get("/api/auth/me", headers=auth(tk_b)).status_code == 401)
+
+# ---- P0-3 审计外置副本 + P0-1 审批队列 ----
+tk = login("admin", "Admin@123")
+anchor = c.get("/api/admin/audit/anchor", headers=auth(tk)).json()
+ext = anchor.get("external", {})
+check("审计外置副本状态可查（记录数/行副本/验签）",
+      isinstance(ext, dict) and "row_batches" in ext
+      and ext.get("bad_signature", 1) == 0,
+      f"enabled={ext.get('enabled')} records={ext.get('records')}")
+if ext.get("enabled"):
+    check("审计行全量外送生效（离线副本可独立重建时间线）",
+          ext.get("row_batches", 0) >= 1 and ext.get("row_copies", 0) >= 1,
+          f"batches={ext.get('row_batches')} copies={ext.get('row_copies')}")
+    # 密钥轮换与"记录被伪造"必须能区分：巡检要给出当前密钥指纹，
+    # 且旧密钥记录单列（stale_key_records），不能混进 bad_signature。
+    check("巡检给出当前签名密钥指纹（12 位）",
+          len(ext.get("key_id") or "") == 12, f"key_id={ext.get('key_id')}")
+    check("旧密钥记录与验签失败分列统计",
+          "stale_key_records" in ext and ext.get("bad_signature", 1) == 0,
+          f"bad={ext.get('bad_signature')} stale={ext.get('stale_key_records')}")
+ap = c.get("/api/admin/approvals", headers=auth(tk)).json()
+check("审批队列可查且区分账号/文档（subject_type）",
+      isinstance(ap, list) and all("subject_type" in x for x in ap),
+      f"{len(ap) if isinstance(ap, list) else ap} 条")
+check("非管理员看不到审计锚点状态",
+      c.get("/api/admin/audit/anchor", headers=auth(login("intern01"))).status_code == 403)
+
 
 print("\n" + "=" * 46)
 print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

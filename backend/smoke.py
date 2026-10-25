@@ -441,19 +441,57 @@ check("双校验指标齐全（粗筛排除量 + 精校验明细 + 隐式向量�
 check("粗筛排除了不可见文档", v["coarse"]["excluded"] >= 2,
       f"excluded={v['coarse']['excluded']}")
 
-# ---- 9.5 消除缓存时间窗：人员异动即时生效 ----
+# ---- 9.5 消除缓存时间窗：人员异动即时生效（P0-1 双人复核之后仍即时生效）----
+# 提权 / 改挂部门属于"放宽"，P0-1 起必须由**另一名管理员**复核后才能落库。
+# 冒烟里 seed 只有一个管理员，先造一个复核人；申请人自批会被 403（另测）。
+as_user(client, atok)
+client.post("/api/admin/users", json={
+    "username": "p01reviewer", "password": "P01rev@test", "display_name": "权限复核人",
+    "dept_id": users["research01"]["dept_id"], "roles": ["admin"],
+    "clearance": 3, "status": True})
+rev_tok = login_after_forced_change(client, "p01reviewer", "P01rev@test")
+
+
+def patch_user_9(**kw):
+    """以管理员身份改 research01：统一从基线载荷出发，只覆盖关心的字段。"""
+    as_user(client, atok)
+    payload = {"username": "research01", "display_name": "张研究",
+               "dept_id": users["research01"]["dept_id"], "roles": ["research"],
+               "clearance": 2, "status": True, "reason": "smoke：人员异动演练"}
+    payload.update(kw)
+    return client.patch(f"/api/admin/users/{rid}", json=payload)
+
+
+def approve_user_change_9():
+    """由另一名管理员批掉队列里最新一张待审的账号权限单。"""
+    as_user(client, rev_tok)
+    pend = [a for a in client.get("/api/admin/approvals").json()
+            if a["status"] == "pending" and a["subject_type"] == "user"]
+    assert pend, "队列里没有待审的账号权限单"
+    r = client.post(f"/api/admin/approvals/{pend[0]['id']}/approve",
+                    json={"reason": "smoke：双人复核通过"})
+    assert r.status_code == 200, r.text
+
+
 as_user(client, rtok)
 r = client.post("/api/chat", json={
     "query": "核心机构客户留存底线条款的产品让利下限是多少"
 }).json()
 check("提权前研究员拿不到绝密附注", len(r["citations"]) == 0)
 
-as_user(client, atok)
-client.patch(f"/api/admin/users/{rid}", json={
-    "username": "research01", "display_name": "张研究",
-    "dept_id": users["research01"]["dept_id"], "roles": ["research"],
-    "clearance": 3, "status": True})
+_pr = patch_user_9(clearance=3)
+check("提权不再当场生效（P0-1：放宽类变更排队等第二人复核）",
+      _pr.json().get("approval", {}).get("pending") is True,
+      f"approval={_pr.json().get('approval')}")
 as_user(client, rtok)  # 不换 token，原凭证立即生效
+r = client.post("/api/chat", json={
+    "query": "核心机构客户留存底线条款的产品让利下限是多少"
+}).json()
+check("复核通过前权限一点都没放宽（单人可以提交，但不能自己生效）",
+      len(r["citations"]) == 0)
+
+approve_user_change_9()
+as_user(client, rtok)  # 仍然不换 token
 r = client.post("/api/chat", json={
     "query": "核心机构客户留存底线条款的产品让利下限是多少"
 }).json()
@@ -461,17 +499,15 @@ r = client.post("/api/chat", json={
 # 可能恰好切在关键词之前；密级才是这道防线真正要保证的属性。
 # 断言直指属性：同一 token 未刷新即拿到之前拿不到的密级 3 切片。
 # 不用 len(citations)==1 —— 那依赖账本指纹触发 constrain 收敛，属间接副作用。
-check("密级上调后原 token 立即生效（JWT 不携带权限声明，无缓存时间窗）",
+check("复核通过后原 token 立即生效（JWT 不携带权限声明，无缓存时间窗）",
       any(c["clearance"] == 3 and "经营分析" in c["doc_title"]
           for c in r["citations"])
       and all(c["clearance"] <= 3 for c in r["citations"]),
       f"citations={[(c['doc_title'][:14], c['clearance']) for c in r['citations']]}")
 
-as_user(client, atok)
-client.patch(f"/api/admin/users/{rid}", json={
-    "username": "research01", "display_name": "张研究",
-    "dept_id": users["research01"]["dept_id"], "roles": ["research"],
-    "clearance": 2, "status": True})
+# 降密是收紧动作：不必排队，当场生效（撤销越快越好，与安全方向一致）
+_pr = patch_user_9(clearance=2)
+check("降密属收紧动作，不排队当场生效", _pr.json().get("approval", {}).get("pending") is False)
 depts = {d["name"]: d["id"] for d in client.get("/api/admin/departments").json()}
 as_user(client, rtok)
 before = any("A 股市场中期投资策略" in d["title"]
@@ -481,32 +517,31 @@ check("基准：研究员可见研究所策略报告", before)
 as_user(client, atok)
 new_dept = client.post("/api/admin/departments",
                        json={"name": "研究所量化组", "parent_id": depts["研究所"]}).json()
-client.patch(f"/api/admin/users/{rid}", json={
-    "username": "research01", "display_name": "张研究",
-    "dept_id": new_dept["id"], "roles": ["research"],
-    "clearance": 2, "status": True})
+_pr = patch_user_9(dept_id=new_dept["id"])
+check("改挂部门同样进审批队列（部门决定可见面，也是放宽）",
+      _pr.json().get("approval", {}).get("pending") is True)
+as_user(client, rtok)
+still = any("A 股市场中期投资策略" in d["title"]
+            for d in client.get("/api/docs").json())
+check("复核前仍在原部门（可见面没变）", before and still)
+
+approve_user_change_9()
 as_user(client, rtok)
 after = any("A 股市场中期投资策略" in d["title"]
             for d in client.get("/api/docs").json())
-check("调入研究所下级新部门后看不到策略报告（部门树变更即时生效）",
+check("复核通过后调入下级新部门立即生效（部门树变更即时重算）",
       before and not after)
 
-as_user(client, atok)
-client.patch(f"/api/admin/users/{rid}", json={
-    "username": "research01", "display_name": "张研究",
-    "dept_id": depts["集团总部"], "roles": ["research"],
-    "clearance": 2, "status": True})
+patch_user_9(dept_id=depts["集团总部"])
+approve_user_change_9()
 as_user(client, rtok)
 check("调入集团总部后经上级链重新可见（权限随人员异动即时重算）",
       any("A 股市场中期投资策略" in d["title"] for d in client.get("/api/docs").json()))
 
 # 调回研究所：9.6 需要验证"无授权不可见"，若还在集团总部，
 # 经上级链本就能看到风险管理部的文档，基准就不成立了。
-as_user(client, atok)
-client.patch(f"/api/admin/users/{rid}", json={
-    "username": "research01", "display_name": "张研究",
-    "dept_id": depts["研究所"], "roles": ["research"],
-    "clearance": 2, "status": True})
+patch_user_9(dept_id=depts["研究所"])
+approve_user_change_9()
 
 # ---- 9.6 临时授权到期自动失效 ----
 as_user(client, atok)
@@ -622,6 +657,18 @@ from sqlalchemy import inspect as sa_inspect  # noqa: E402
 _dbg = SessionLocal()
 try:
     from sqlalchemy import inspect as sa_inspect  # noqa: E402
+    from sqlalchemy import text as sa_text  # noqa: E402
+
+    def break_glass(db):
+        """演练破窗：P0-3 的只追加触发器会拒绝 UPDATE/DELETE。
+
+        下面几条断言要验证的正是"拿到库写权限的攻击者改了审计行，链校验能否
+        检出"，因此必须真的改得动。按 runbook 的破窗姿势：事务级开关，
+        `SET LOCAL` 只在当前事务内生效，commit 即自动复位——不会把整库的
+        只追加保护关掉。
+        """
+        db.execute(sa_text("SET LOCAL finrag.audit_append_only = 'off'"))
+
     cols = {c["name"] for c in sa_inspect(_dbg.bind).get_columns("audit_logs")}
     check("增量迁移补齐审计链字段（prev_hash/row_hash）",
           {"prev_hash", "row_hash"} <= cols,
@@ -648,6 +695,7 @@ try:
                      reason="P0 链校验测试行（随后删除）")
     flush_audit()
     _row = _dbg.get(AuditLog, tlog.id)
+    break_glass(_dbg)
     _row.reason = "tampered-by-attacker"
     _dbg.commit()
     res2 = verify_chain(_dbg, limit=20000)
@@ -658,6 +706,7 @@ try:
     # 还原被篡改行：检出能力已验证，恢复原值后重算即重新自洽——
     # 避免破坏性残留影响 12.3 的"异步批次写入后全链自洽"断言
     # （那一条要求除已知断点外全链干净， tamper 行不属于异步写入的回归面）
+    break_glass(_dbg)
     _row.reason = "P0 链校验测试行（随后删除）"
     _dbg.commit()
 
@@ -669,6 +718,7 @@ try:
     t2 = write_log(_dbg, action="chain_probe", decision="allow",
                    reason="P0 链校验测试行 B")
     flush_audit()
+    break_glass(_dbg)
     _dbg.delete(_dbg.get(AuditLog, t1.id))
     _dbg.commit()
     res3 = verify_chain(_dbg, limit=20000)
@@ -676,6 +726,7 @@ try:
           f"broken_links={res3['broken_links']}")
     check("删除审计行后序号断档检出", res3["seq_gaps"] >= 1,
           f"seq_gaps={res3['seq_gaps']}")
+    break_glass(_dbg)
     _dbg.delete(_dbg.get(AuditLog, t2.id))
     _dbg.commit()
     from app.audit import resume_chain  # noqa: E402

@@ -4,10 +4,13 @@
 # 为什么必须进 CI（而不是只在本地跑）：
 #   · 本项目的安全断言密度很高（越权 404、切片级密级、防拼图、审计链、
 #     首登改密、MFA/恢复码、OIDC 校验分支、审计锚点外置、跨 worker 登录计数）——
-#     任何一次"顺手改动"都可能让某条断言失效，而人眼 review 抓不住 746 条
+#     任何一次"顺手改动"都可能让某条断言失效，而人眼 review 抓不住 800+ 条
 #     断言里的回归；
 #   · 测试依赖真实 PostgreSQL + pgvector（#21 后 SQLite 降级链路已移除），
-#     所以用 service 容器起 pgvector/pgvector:pg16，与生产同引擎同扩展。
+#     所以用 service 容器起 pgvector/pgvector:pg16，与生产同引擎同扩展；
+#   · P0-6 之后结构变更以 Alembic 为准：CI 每次都在空库上跑一遍
+#     `alembic upgrade head`，确保迁移脚本永远可用（不然等到发布当晚才发现
+#     迁移报错，是最典型的"上线事故"）。
 name: ci
 
 on:
@@ -83,7 +86,48 @@ jobs:
 
       - name: Import sanity (fail fast on syntax/import errors)
         working-directory: backend
-        run: python -m compileall -q app && python -c "import app.main, app.recovery, app.anchors"
+        run: python -m compileall -q app alembic && python -c "import app.main, app.recovery, app.anchors, app.secrets_provider, app.httpguard"
+
+      # P0-6：结构迁移必须在空库上从零跑通（与 create_all 双轨等价）。
+      # 先跑迁移再跑测试：测试 schema 由 conftest 的独立 schema 建，互不干扰。
+      - name: Alembic upgrade head (empty database)
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic current
+          # 幂等：再跑一次不应有任何变更（幂等基线是双轨设计的前提）
+          alembic upgrade head
+
+      # P0-3：只追加触发器必须真的装上了（否则审计能被 UPDATE 抹掉）。
+      - name: Verify audit append-only trigger
+        env:
+          PGPASSWORD: Fin@Rag2026
+        run: |
+          psql -h 127.0.0.1 -U finrag -d finrag_test -v ON_ERROR_STOP=1 -c \
+            "SELECT tgname FROM pg_trigger WHERE tgrelid='audit_logs'::regclass AND NOT tgisinternal;" \
+            | tee /tmp/triggers.txt
+          grep -q trg_audit_append_only /tmp/triggers.txt
+          grep -q trg_audit_no_truncate /tmp/triggers.txt
+
+      # P0-2：安全头是"默认开"的，不能因为谁动了中间件顺序就静默消失。
+      - name: Security headers smoke
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from app.main import app
+          r = TestClient(app).get("/api/v1/health")
+          assert r.status_code == 200, r.status_code
+          for h, v in {
+              "x-content-type-options": "nosniff",
+              "x-frame-options": "DENY",
+              "referrer-policy": "no-referrer",
+          }.items():
+              assert r.headers.get(h) == v, (h, r.headers.get(h))
+          assert "content-security-policy" in {k.lower() for k in r.headers}
+          assert r.headers.get("cache-control") == "no-store"
+          print("security headers OK")
+          PY
 
       - name: pytest
         working-directory: backend

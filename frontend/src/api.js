@@ -1,11 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 import axios from 'axios'
+import { clearSession, csrfToken, getToken, needsCsrf } from './session'
 
-const api = axios.create({ baseURL: '/api', timeout: 120000 })
+const api = axios.create({
+  baseURL: '/api',
+  timeout: 120000,
+  // cookie 模式下会话随 Cookie 走；跨域白名单部署时也必须带上凭据
+  withCredentials: true
+})
 
 api.interceptors.request.use((cfg) => {
-  const t = localStorage.getItem('finrag_token')
+  // bearer 模式：内存里只有令牌本身；cookie 模式没有令牌可带（HttpOnly）
+  const t = getToken()
   if (t) cfg.headers.Authorization = `Bearer ${t}`
+  // 双提交 CSRF：写操作必须让 Cookie 与请求头一致，服务端才放行。
+  // 预检/跨域请求也会被浏览器带上（X-CSRF-Token 已在 CORS 允许头里）。
+  if (needsCsrf(cfg.method)) {
+    const csrf = csrfToken()
+    if (csrf) cfg.headers['X-CSRF-Token'] = csrf
+  }
   return cfg
 })
 
@@ -14,9 +27,10 @@ api.interceptors.response.use(
   (err) => {
     const status = err.response?.status
     if (status === 401 && !location.hash.startsWith('#/login')) {
-      localStorage.removeItem('finrag_token')
-      localStorage.removeItem('finrag_user')
+      // 会话已失效（空闲超时 / 被吊销 / 令牌过期）：清干净再回登录页
+      clearSession()
       location.hash = '#/login'
+      location.reload()
     }
     return Promise.reject(err)
   }
@@ -32,6 +46,10 @@ export const auth = {
   providers: () => api.get('/auth/providers'),
   me: () => api.get('/auth/me'),
   logout: () => api.post('/auth/logout'),
+  // P0-4：退出全部设备 / 查看与吊销单个设备会话
+  logoutAll: () => api.post('/auth/logout/all'),
+  sessions: () => api.get('/auth/sessions'),
+  revokeSession: (sid) => api.post(`/auth/sessions/${encodeURIComponent(sid)}/revoke`),
   changePassword: (oldPassword, newPassword) =>
     api.post('/auth/change-password', { old_password: oldPassword, new_password: newPassword }),
   // 动态口令：绑定/确认/解绑都必须带上当前口令（二次认证）
@@ -67,12 +85,14 @@ export const admin = {
   createUser: (data) => api.post('/admin/users', data),
   updateUser: (id, data) => api.patch(`/admin/users/${id}`, data),
   resetMfa: (id) => api.post(`/admin/users/${id}/mfa-reset`),
+  // P0-4：管理员强制下线某账号的全部设备（口令泄露/离职交接时用）
+  revokeSessions: (id) => api.post(`/admin/users/${id}/revoke-sessions`),
   depts: () => api.get('/admin/departments'),
   audit: (params) => api.get('/admin/audit', { params }),
   auditDetail: (id) => api.get(`/admin/audit/${id}`),
   stats: () => api.get('/admin/stats'),
   jigsaw: () => api.get('/admin/jigsaw'),
-  // 审批中心（密级 / 访问范围 / 新增授权变更的双人复核）
+  // 审批中心（密级 / 访问范围 / 新增授权 / 账号权限变更的双人复核）
   approvals: () => api.get('/admin/approvals'),
   approve: (id, reason = '') => api.post(`/admin/approvals/${id}/approve`, { reason }),
   reject: (id, reason = '') => api.post(`/admin/approvals/${id}/reject`, { reason })

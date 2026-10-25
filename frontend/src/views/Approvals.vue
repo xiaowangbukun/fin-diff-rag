@@ -13,13 +13,21 @@
     </div>
 
     <el-alert class="tip" type="info" :closable="false" show-icon
-              title="密级、访问范围、新增授权等权限变更须他人复核后才生效；申请人不能审批自己提交的单据。" />
+              title="密级、访问范围、新增授权、账号权限放宽等变更须他人复核后才生效；申请人不能审批自己提交的单据。" />
 
     <el-table :data="visible" v-loading="loading" border stripe empty-text="没有待处理的审批单">
       <el-table-column prop="created_at" label="提交时间" width="150" />
-      <el-table-column label="类型" width="110">
+      <el-table-column label="类型" width="120">
         <template #default="{ row }">
           <el-tag size="small" :type="kindType(row.kind)">{{ kindLabel(row.kind) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="对象" min-width="150" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-tag size="small" type="info" effect="plain">
+            {{ row.subject_type === 'user' ? '账号' : '文档' }}
+          </el-tag>
+          {{ row.target || '—' }}
         </template>
       </el-table-column>
       <el-table-column prop="summary" label="变更内容" min-width="240" show-overflow-tooltip />
@@ -82,13 +90,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { admin } from '../api'
+import { cachedUser } from '../session'
 
 const rows = ref([])
 const loading = ref(false)
 const tab = ref('pending')
-const me = (() => {
-  try { return JSON.parse(localStorage.getItem('finrag_user') || '{}').username || '' } catch (e) { return '' }
-})()
+const me = cachedUser()?.username || ''
 
 const pending = computed(() => rows.value.filter((r) => r.status === 'pending'))
 const decided = computed(() => rows.value.filter((r) => r.status !== 'pending'))
@@ -97,7 +104,9 @@ const visible = computed(() => (tab.value === 'pending' ? pending.value : decide
 const kindMap = {
   clearance: { l: '密级变更', t: 'danger' },
   acl: { l: '访问范围', t: 'warning' },
-  acl_grant: { l: '新增授权', t: 'primary' }
+  acl_grant: { l: '新增授权', t: 'primary' },
+  // P0-1：账号权限放宽（加角色 / 升密 / 启用 / 改挂部门）双人复核
+  user_privilege: { l: '账号权限', t: 'danger' }
 }
 const kindLabel = (k) => (kindMap[k] || { l: k }).l
 const kindType = (k) => (kindMap[k] || { t: 'info' }).t

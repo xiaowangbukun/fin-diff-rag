@@ -65,6 +65,40 @@ def test_emit_appends_signed_record(anchor_file):
     assert all(r["sig_ok"] for r in records)
 
 
+def test_check_still_finds_anchor_when_row_batches_flood_the_tail(anchor_file):
+    """行副本把尾部灌满后，启动比对不能退化成"暂无记录"。
+
+    锚点按 INTERVAL 限频、行副本按批次写入，高峰期尾部几百行可能全是
+    audit_rows。若 check() 只扫最近 200 行就断言"外置锚点暂无记录"，
+    截断检测会在最需要它的时刻（正是刚被大量写入之后重启）静默失效。
+    """
+    anchors.emit("A" * 64, 100, force=True)          # 一条已验证锚点
+    for i in range(300):                              # 之后灌入 300 条行副本
+        anchors.ship_rows([{"seq": 100 + i, "row_hash": f"{i:064d}",
+                           "prev_hash": "", "ts": "", "action": "qa",
+                           "decision": "allow", "username": "u",
+                           "target_label": "", "ip": ""}])
+    assert len(anchors.read_external(limit=200)) == 200   # 尾部全是行副本
+    # 库内尾行序号 90 < 锚点 100 → 必须判定为截断
+    res = anchors.check("B" * 64, 90)
+    assert res["truncated"] is True
+    assert res["external_seq"] == 100
+
+
+def test_read_external_reads_only_tail(anchor_file):
+    """巡检只读尾部 N 行：外置 sink 是半年期只追加文件，整文件读入不可接受。
+
+    这条用例同时验证跨块读取（每块 64KB，300 条约 90KB）不会截断首行或多读。
+    """
+    for i in range(1, 301):
+        anchors.emit(f"{'H' * 63}{i % 10}", i, force=True)
+    records = anchors.read_external(limit=5)
+    assert [r["seq"] for r in records] == [296, 297, 298, 299, 300]
+    assert all(r["sig_ok"] for r in records)
+    # limit 大于文件行数时返回全部（不倒序、不丢行）
+    assert len(anchors.read_external(limit=1000)) == 300
+
+
 def test_tampered_external_record_fails_signature(anchor_file):
     """防：改文件里的序号/哈希，把截断伪装成正常。"""
     anchors.emit("H" * 64, 7, force=True)
@@ -85,6 +119,72 @@ def test_emit_is_rate_limited_but_force_bypasses(anchor_file):
     assert anchors.emit("H" * 64, 4) is None
     assert anchors.emit("H" * 64, 4, force=True) is not None
     assert len(anchors.read_external()) == 2
+
+
+def test_key_rotation_is_distinguished_from_tampering(anchor_file, monkeypatch):
+    """防误报：轮换签名密钥后历史记录必然验签失败，不能一律算成"被伪造"。
+
+    没有这层区分时，只要运维把 AUDIT_ANCHOR_HMAC_KEY 从"派生自 JWT"改成
+    独立值，巡检就会报出成百上千条 bad_signature，真正被篡改的那条反而
+    被噪声淹没。key_id 让"旧密钥下的记录"可解释、单列且依旧不采信。
+    """
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_HMAC_KEY", "old-key-0001")
+    anchors.emit("A" * 64, 21, force=True)
+    old_records = anchors.read_external()
+    assert old_records[0]["sig_ok"] is True
+    assert old_records[0]["key_id"] == anchors.key_id()
+
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_HMAC_KEY", "new-key-0002")
+    rotated = anchors.read_external()
+    assert rotated[0]["sig_ok"] is False
+    assert rotated[0]["sig_state"] == "stale_key"
+
+    status = anchors.check("B" * 64, 21)
+    assert status["bad_signature"] == 0, "旧密钥记录不应被算作疑似篡改"
+    assert status["stale_key_records"] == 1
+    assert status["key_id"] == anchors.key_id()
+    # 不可验证的记录永远不参与"链尾是否被改"的裁决
+    assert status["external_seq"] == 0
+
+    # 新密钥下的记录恢复正常，且与旧记录在同一只追加流里互不干扰
+    anchors.emit("C" * 64, 22, force=True)
+    latest = anchors.check("C" * 64, 22)
+    assert latest["ok"] is True and latest["external_seq"] == 22
+    assert latest["stale_key_records"] == 1
+
+
+def test_forged_record_with_wrong_key_id_is_not_whitelisted(anchor_file, monkeypatch):
+    """防绕过：改了内容的记录不能靠"伪造一个陌生 key_id"混进旧密钥豁免里。
+
+    分类只影响**统计口径**，不影响信任判定——任何时候只有验签通过的记录
+    才会被用于链尾比对；被改过的记录无论被归到哪一类都不会被采信。
+    """
+    anchors.emit("A" * 64, 31, force=True)
+    lines = anchor_file.read_text(encoding="utf-8").strip().splitlines()
+    forged = json.loads(lines[0])
+    forged["tail_hash"] = "Z" * 64
+    forged["key_id"] = "deadbeefcafe"        # 冒充"另一把密钥"下的记录
+    anchor_file.write_text(json.dumps(forged, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+    status = anchors.check("A" * 64, 31)
+    assert status["external_seq"] == 0
+    assert status["bad_signature"] + status["stale_key_records"] == 1
+    # 关键：伪记录没有被当作可信锚点（否则会误判成"链尾被改"或"正常"）
+    assert status["tampered"] is False and status["truncated"] is False
+
+
+def test_startup_warning_only_without_dedicated_key(anchor_file, monkeypatch):
+    """sink 启用但没配独立 HMAC 密钥 → 启动必须明确告警（不静默耦合 JWT）。"""
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_HMAC_KEY", "")
+    assert "JWT_SECRET" in anchors.startup_warning()
+
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_HMAC_KEY", "dedicated-key-123")
+    assert anchors.startup_warning() == ""
+
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_EXTERNAL_FILE", "")
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_URL", "")
+    monkeypatch.setattr(config, "AUDIT_ANCHOR_HMAC_KEY", "")
+    assert anchors.startup_warning() == "", "没配 sink 就不该告警"
 
 
 def test_check_detects_truncation_and_tampered_tail(anchor_file):

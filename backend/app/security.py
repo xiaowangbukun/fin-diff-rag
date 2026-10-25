@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""认证与鉴权基础：密码哈希、JWT、当前用户注入。"""
+"""认证与鉴权基础：密码哈希、JWT、会话、当前用户注入。"""
 import hashlib
 import hmac
 import logging
 import os
+import secrets
 import warnings
 from datetime import datetime, timedelta, timezone
 
@@ -19,7 +20,8 @@ from .config import (
 )
 from . import config as _cfg
 from .db import get_db
-from .models import User
+from .httpguard import is_https
+from .models import AuthSession, User, new_id
 
 # 改密前允许访问的端点（只够"看自己是谁 + 改密 + 登出"）。
 # 用后缀匹配，避免被 /api、/api/v1 版本前缀写死。
@@ -108,7 +110,7 @@ def needs_rehash(pwd_hash: str) -> bool:
     return bool(expected) and iterations < PASSWORD_ITERATIONS
 
 
-def create_token(user: User) -> str:
+def create_token(user: User, sid: str | None = None) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user.id,
@@ -120,7 +122,158 @@ def create_token(user: User) -> str:
         "exp": now + timedelta(hours=JWT_EXPIRE_HOURS),
         "iat": now,
     }
+    # sid 指向服务端会话行：有空闲超时与单端吊销，没有就只能等自然过期。
+    if sid:
+        payload["sid"] = sid
     return jwt.encode(payload, _SECRETS[0], algorithm="HS256")
+
+
+# ---------------------------------------------------------------- 会话（P0-4）
+
+def open_session(db: Session, user: User, ip: str = "", ua: str = "") -> AuthSession:
+    """登录成功时建一条服务端会话（令牌里的 sid 指向它）。"""
+    sess = AuthSession(
+        sid=new_id(), user_id=user.id, username=user.username,
+        ip=(ip or "")[:64], user_agent=(ua or "")[:255],
+    )
+    now = datetime.utcnow()
+    sess.created_at = now
+    sess.last_seen_at = now
+    db.add(sess)
+    db.commit()
+    return sess
+
+
+def active_sessions(db: Session, user: User, limit: int = 20) -> list[AuthSession]:
+    """该账号当前有效的会话（按最近活跃倒序），供"我的登录设备"页面。"""
+    rows = db.execute(
+        select(AuthSession).where(AuthSession.user_id == user.id,
+                                  AuthSession.revoked_at.is_(None))
+        .order_by(AuthSession.last_seen_at.desc()).limit(limit)
+    ).scalars().all()
+    idle = _cfg.SESSION_IDLE_MINUTES
+    if idle > 0:
+        cutoff = datetime.utcnow() - timedelta(minutes=idle)
+        rows = [r for r in rows if (r.last_seen_at or r.created_at or cutoff) >= cutoff]
+    return rows
+
+
+def revoke_session(db: Session, sid: str, reason: str = "logout") -> bool:
+    row = db.get(AuthSession, sid)
+    if row is None or row.revoked_at is not None:
+        return False
+    row.revoked_at = datetime.utcnow()
+    row.revoked_reason = reason[:64]
+    db.commit()
+    return True
+
+
+def revoke_user_sessions(db: Session, user_id: str, reason: str,
+                         keep_sid: str | None = None) -> int:
+    """批量吊销某账号的会话（改密 / 管理员重置 / 踢全部设备）。"""
+    rows = db.execute(
+        select(AuthSession).where(AuthSession.user_id == user_id,
+                                  AuthSession.revoked_at.is_(None))
+    ).scalars().all()
+    now = datetime.utcnow()
+    n = 0
+    for row in rows:
+        if keep_sid and row.sid == keep_sid:
+            continue
+        row.revoked_at = now
+        row.revoked_reason = reason[:64]
+        n += 1
+    if n:
+        db.commit()
+    return n
+
+
+def check_session(db: Session, payload: dict, request: Request) -> str | None:
+    """校验 sid 对应会话：吊销 → 401，空闲超时 → 401；返回 sid（无 sid 返回 None）。
+
+    没有 sid 的令牌（历史签发 / 测试手工构造）按"无服务端会话"处理：仍可用，
+    但拿不到空闲超时与单端吊销——这条兼容路径只为不把存量会话一次性踢光，
+    登录入口一律签发带 sid 的令牌。
+    """
+    sid = payload.get("sid")
+    if not sid:
+        return None
+    row = db.get(AuthSession, sid)
+    if row is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话不存在，请重新登录")
+    if row.revoked_at is not None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话已失效，请重新登录")
+    now = datetime.utcnow()
+    last = row.last_seen_at or row.created_at or now
+    idle = _cfg.SESSION_IDLE_MINUTES
+    if idle > 0 and now - last > timedelta(minutes=idle):
+        row.revoked_at = now
+        row.revoked_reason = "idle_timeout"
+        db.commit()
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "长时间未操作，会话已失效，请重新登录")
+    if (now - last).total_seconds() >= max(int(_cfg.SESSION_TOUCH_SECONDS), 0):
+        row.last_seen_at = now
+        db.commit()
+    return sid
+
+
+# ---------------------------------------------------------------- Cookie 认证
+
+def cookie_secure(request: Request) -> bool:
+    """Cookie 是否带 Secure：auto 时与 HSTS 同口径（含反代 X-Forwarded-Proto）。"""
+    mode = (_cfg.AUTH_COOKIE_SECURE or "auto").lower()
+    if mode in ("1", "true", "yes", "on"):
+        return True
+    if mode in ("0", "false", "no", "off"):
+        return False
+    return is_https(request)
+
+
+def set_session_cookies(response, request: Request, token: str) -> str:
+    """HttpOnly 会话 Cookie + 可读的 CSRF 双提交 Cookie。
+
+    CSRF 采用双提交（非 HttpOnly 的随机值 + 请求头回传同样的值）：跨站表单
+    无法读取该 Cookie，因此无法在头里带上它；SameSite=Lax 作为第二道。
+    """
+    csrf = secrets.token_urlsafe(24)
+    secure = cookie_secure(request)
+    max_age = int(JWT_EXPIRE_HOURS * 3600)
+    response.set_cookie(
+        _cfg.AUTH_COOKIE_NAME, token, max_age=max_age, path="/",
+        httponly=True, secure=secure, samesite="lax",
+    )
+    response.set_cookie(
+        _cfg.CSRF_COOKIE_NAME, csrf, max_age=max_age, path="/",
+        httponly=False, secure=secure, samesite="lax",
+    )
+    return csrf
+
+
+def clear_session_cookies(response) -> None:
+    response.delete_cookie(_cfg.AUTH_COOKIE_NAME, path="/")
+    response.delete_cookie(_cfg.CSRF_COOKIE_NAME, path="/")
+
+
+def _check_csrf(request: Request) -> None:
+    """Cookie 认证下，非安全方法必须带与 CSRF Cookie 一致的请求头。"""
+    if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):
+        return
+    cookie = request.cookies.get(_cfg.CSRF_COOKIE_NAME, "")
+    header = request.headers.get("X-CSRF-Token", "")
+    if not cookie or not hmac.compare_digest(cookie, header):
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "缺少或无效的 CSRF 凭据，请刷新页面后重试")
+
+
+def _extract_credential(request: Request, cred) -> tuple[str, str]:
+    """取值顺序：Authorization 头优先（脚本/联调用），其次会话 Cookie。"""
+    if cred is not None and cred.credentials:
+        return cred.credentials, "bearer"
+    token = request.cookies.get(_cfg.AUTH_COOKIE_NAME)
+    if token:
+        return token, "cookie"
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未登录")
 
 
 def sign_purpose(payload: dict, typ: str, minutes: int) -> str:
@@ -185,10 +338,11 @@ def current_user(
     cred: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> User:
-    if cred is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未登录")
+    token, via = _extract_credential(request, cred)
+    if via == "cookie":
+        _check_csrf(request)
     try:
-        payload = decode_token(cred.credentials)
+        payload = decode_token(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录已过期")
     except Exception:
@@ -202,6 +356,10 @@ def current_user(
     # 会话代次：改密/重置/登出会让旧令牌立刻失效，而不是等 12 小时过期
     if int(payload.get("ver", 0)) != int(user.token_version or 0):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话已失效，请重新登录")
+    # 服务端会话：空闲超时 + 单端吊销（P0-4）。把 sid 挂到 request.state，
+    # 登出/踢端接口据此知道"当前这台设备"是哪一条。
+    request.state.auth_via = via
+    request.state.sid = check_session(db, payload, request)
     # 强制改密闸门：只放行"看自己/改密/登出"，其余一律 403。
     # 做成服务端硬闸而不是前端弹窗——绕过前端直接调 API 同样进不来。
     if user.must_change_password and not request.url.path.endswith(

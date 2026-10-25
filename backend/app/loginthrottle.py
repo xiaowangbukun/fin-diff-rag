@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 """登录防爆破：按 key（用户名 / "用户名#mfa"）的失败计数 + 锁定。
 
 pbkdf2 600k 迭代只能压慢爆破，不能阻止——在线猜解的成本上限不在哈希算力上，

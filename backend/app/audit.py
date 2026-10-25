@@ -60,6 +60,35 @@ def _emit_external_anchor(tail_hash: str, seq: int) -> None:
     except Exception as e:  # noqa: BLE001 外部 sink 的任何异常都不该丢审计行
         print(f"[audit] 外置锚点外发异常（{type(e).__name__}: {e}）", file=sys.stderr)
 
+
+def _ship_rows(batch: list[AuditLog]) -> None:
+    """把本批新增审计行外送到外置 sink（P0-3 全量副本）。
+
+    与链尾锚点的分工：锚点回答"尾行有没有被改写"，行副本回答"中间发生过
+    什么"。没有行副本时，攻击者改中间行 + 重算其后所有哈希 + 保留正确尾哈希，
+    锚点比对依然通过；有了独立副本，缺失/不同的行立刻对不上。
+    """
+    if not batch:
+        return
+    try:
+        from .anchors import ship_rows as _ship
+    except Exception:  # noqa: BLE001 导入失败不该影响审计
+        return
+    rows = [{
+        "seq": b.seq or 0, "row_hash": b.row_hash or "",
+        "prev_hash": b.prev_hash or "",
+        "ts": b.ts.isoformat() if b.ts else "",
+        "action": b.action or "", "decision": b.decision or "",
+        "username": b.username or "", "target_label": b.target_label or "",
+        "ip": b.ip or "",
+    } for b in batch if b.row_hash]
+    if not rows:
+        return
+    try:
+        _ship(rows)
+    except Exception as e:  # noqa: BLE001 外部 sink 故障绝不影响审计落库
+        print(f"[audit] 审计行外送异常（{type(e).__name__}: {e}）", file=sys.stderr)
+
 # 链尾状态：锁内"取尾 → 定 prev → 插行 → commit"一气呵成，进程内无竞态。
 _chain_lock = threading.Lock()
 _last_hash = "GENESIS"
@@ -128,16 +157,18 @@ def _commit_batch(batch: list[AuditLog]) -> None:
     if not batch:
         return
     db = SessionLocal(expire_on_commit=False)
+    tail: tuple[str, int] = ("", 0)
+    committed = False
     try:
         with _chain_lock:
             for log in batch:
                 _assign_chain(log)
                 db.add(log)
             db.commit()
-            # 外置锚点（P0-2 增强）：链尾按周期追加到应用不可回写的位置。
-            # 放在链锁内取尾，保证"外发序号 = 已提交序号"；限频在 anchors 内部，
-            # 因此这里每批次调用不会造成逐行外发。
-            _emit_external_anchor(_last_hash, _last_seq)
+            # 在锁内只取链尾快照：外发涉及文件 fsync / HTTP，绝不能持链锁做 I/O，
+            # 否则 sink 变慢会直接卡住所有审计写入（进而卡住请求）。
+            tail = (_last_hash, _last_seq)
+            committed = True
     except Exception as e:
         try:
             db.rollback()
@@ -149,6 +180,12 @@ def _commit_batch(batch: list[AuditLog]) -> None:
               f"{type(e).__name__}: {e}）", file=sys.stderr)
     finally:
         db.close()
+    if not committed:
+        return
+    # P0-3 全量外送：本批"序号 + 行哈希 + 摘要"进独立副本（sink 侧可重建时间线）。
+    # 再补一条链尾锚点：行副本回答"发生过什么"，锚点回答"尾行有没有被截断/改写"。
+    _ship_rows(batch)
+    _emit_external_anchor(*tail)
 
 
 def _drain_all() -> None:
@@ -261,8 +298,14 @@ def resume_chain(db: Session) -> dict:
                        f"疑似尾行内容被改写或链被重算")
             alarms.append(f"审计链外置锚点告警：{why}")
         elif ext.get("enabled") and ext.get("bad_signature"):
-            alarms.append(f"审计链外置锚点告警：{ext['bad_signature']} 条记录"
-                          f"验签失败（可能被伪造或密钥已轮换）")
+            # 只算"指纹相同却验签不过"（sig_state=bad）：密钥轮换前的历史
+            # 记录单独归入 stale_key_records，不在这里报"伪造"——把轮换误报
+            # 成攻击，正是运维开始忽略审计告警的第一步。
+            alarms.append(
+                f"审计链外置锚点告警：{ext['bad_signature']} 条记录验签失败"
+                f"（签名指纹与当前密钥一致，疑似被伪造或改写"
+                + (f"；另有 {ext['stale_key_records']} 条旧密钥记录不可验证）"
+                   if ext.get("stale_key_records") else "）"))
     except Exception as e:  # noqa: BLE001 外置 sink 故障不阻断启动
         print(f"[audit] 外置锚点启动比对失败（{type(e).__name__}: {e}）",
               file=sys.stderr)
@@ -326,7 +369,10 @@ def write_log(
         db.add(log)
         db.commit()
         db.refresh(log)
-        _emit_external_anchor(_last_hash, _last_seq)
+        tail = (_last_hash, _last_seq)
+    # 同步路径同样要外送（启动告警/背压回落都属于合规上不能缺的行）
+    _ship_rows([log])
+    _emit_external_anchor(*tail)
     return log
 
 

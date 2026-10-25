@@ -1,4 +1,4 @@
-﻿# 金融企业级 RAG 知识库（全链路权限防泄密）
+﻿﻿# 金融企业级 RAG 知识库（全链路权限防泄密）
 
 > 本项目基于 [Apache License 2.0](LICENSE) 发布
 
@@ -152,17 +152,27 @@ fin-rag/
 │   │   ├── recovery.py         一次性恢复码（摘要存储、一码一用、整组重生成）
 │   │   ├── oidc.py             OIDC 客户端（discovery / JWKS / PKCE / 验签）
 │   │   ├── vindex.py           pgvector 向量索引保障（HNSW）
+│   │   ├── httpguard.py        浏览器边界中间件（安全头 / HTTPS 跳转 / CORS 闸 / Host 白名单）
+│   │   ├── secrets_provider.py 密钥托管适配（file 密封卷 / http 网关，启用后不回落 .env）
 │   │   ├── seed.py             内置示例数据（含混合密级文档）
 │   │   └── routers/            auth / docs / chat / admin
-│   ├── tests/                  pytest 单测体系（697 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
-│   ├── smoke.py                端到端冒烟（257 项断言）
-│   ├── http_check.py           真实服务 HTTP 验证（26 项断言）
+│   ├── alembic.ini             结构迁移配置（注释必须 ASCII：alembic 按 locale 读 ini）
+│   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）
+│   ├── tests/                  pytest 单测体系（842 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
+│   ├── smoke.py                端到端冒烟
+│   ├── http_check.py           真实服务 HTTP 验证（Bearer 模式基线）
+│   ├── cookie_mode_check.py    真实服务 HTTP 验证（Cookie + CSRF 模式）
 │   ├── requirements.txt        最低版本口径
 │   ├── requirements-lock.txt   精确版本锁（pip freeze，供离线安装）
 │   └── run.py
 ├── scripts/
 │   ├── oidc_live_check.py      对运行中的服务跑真实 OIDC 授权码流程（可指向 Keycloak/Azure AD）
-│   └── recovery_live_check.py  对运行中的服务跑恢复码全链路（跑完自动复原被测账号）
+│   ├── recovery_live_check.py  对运行中的服务跑恢复码全链路（跑完自动复原被测账号）
+│   ├── pg_backup.py            备份 / 校验 / 恢复（清单含审计链尾 + alembic 版本，恢复后三项自动比对）
+│   ├── audit_archive.py        审计留存归档（≥6 个月，只导不删，链校验不过拒绝导出）
+│   └── generate_third_party_notices.py  生成 THIRD-PARTY-NOTICES.md
+├── docs/
+│   └── BACKUP-RESTORE.md       升级 / 备份 / 恢复 / 留存 runbook（含演练记录）
 └── frontend/                   Vue3 + Element Plus 控制台
 ```
 
@@ -281,8 +291,14 @@ npm run build    # 产出 dist/，后端会自动托管，直接访问 8000 即�
    - 联调方式：`python tests/idp_stub.py 9110` 可起一个真实 HTTP 的 OIDC Provider（含 PKCE 与 RS256 签名），配合 `scripts/oidc_live_check.py` 对**运行中的服务**跑一遍授权码流程（`RAG_BASE=... IDP_USER=... IDP_PASSWORD=... python scripts/oidc_live_check.py`）；对接 Keycloak/Azure AD 时把 `OIDC_ISSUER` 换成真实 issuer，用法不变。pytest 侧 `tests/test_oidc_real_idp.py` 走同一套真实 HTTP 链路（不打桩协议函数）。
 5. **审计锚点外置（防"双权限重写"，强烈建议生产配）**：把 `AUDIT_ANCHOR_EXTERNAL_FILE` 指向应用只写不读回、无删除权限的卷（WORM/日志卷），或把 `AUDIT_ANCHOR_URL` 指向 SIEM/日志网关（POST JSON，5 秒超时）。建议独立配置 `AUDIT_ANCHOR_HMAC_KEY`（别复用 `JWT_SECRET`），并确认接收端不返回可被应用改写的内容。上线后调一次 `POST /api/admin/audit/anchor` 验证链路，再用 `GET /api/admin/audit/anchor` 确认 `records≥1` 且 `bad_signature=0`。未配置时系统只用本地锚点，防不住同时拿到库写与磁盘写的攻击者（见「十」）。
 6. **登录防爆破**：默认 `LOGIN_THROTTLE_BACKEND=auto` 即用 PG 共享计数（多 worker 生效，无需额外组件）；首次升级需确认 `login_attempts` 表已由 `init_db()` 建出。阈值 `LOGIN_MAX_FAILS=5` / `LOGIN_WINDOW_MINUTES=5` / `LOGIN_LOCK_MINUTES=15` 可按机构口令策略调整。
-7. **巡检手段**：`GET /api/health` 的 `jwt_secret` 字段为 `configured` / `ephemeral`——脚本可断言其不为 `ephemeral`；`embed_mode` 应为 `api` 而非 `local`。
-8. **第三方许可**：`THIRD-PARTY-NOTICES.md`（仓库根，`python scripts/generate_third_party_notices.py` 生成）——升级任何依赖后必须重跑；已知传染性许可 certifi（MPL-2.0）/ psycopg（LGPL-3.0）均与 Apache-2.0 兼容，随分发提供许可文本即可。
+7. **部署边界（P0-2，强烈建议生产配）**：反代终止 TLS 时置 `TRUST_PROXY_HEADERS=true` 并开 `FORCE_HTTPS=true`（健康探针自动豁免 308）；`TRUSTED_HOSTS` 填实际访问域名（防 DNS rebinding）；`DISABLE_DOCS=true` 关掉 `/docs`；前端与 API 不同域时必须把前端域名写进 `CORS_ALLOW_ORIGINS`（默认空=只允许同源）。安全头默认开，`GET /api/health` 响应应带 `X-Content-Type-Options: nosniff` 与 `Cache-Control: no-store`，可脚本断言。
+   - **两道转发头开关要一起看**：uvicorn 自己有 `proxy_headers` / `FORWARDED_ALLOW_IPS`（默认只信任 `127.0.0.1`），应用层是 `TRUST_PROXY_HEADERS`。反代**与应用同机**时 uvicorn 默认就认 `X-Forwarded-Proto`，HSTS/Secure 会正常下发；反代在**另一台机器**时，要么配 `FORWARDED_ALLOW_IPS=<反代 IP>`，要么显式置 `TRUST_PROXY_HEADERS=true`——否则应用看到的是明文 http，会话 Cookie 会漏发 `Secure`（`cookie_mode_check.py` 与 `tests/test_sessions.py` 覆盖两种口径）。
+8. **密钥托管（P0-5，生产建议开启）**：把 `JWT_SECRET` / `MFA_SECRET_KEY` / `DATABASE_URL` / `OIDC_CLIENT_SECRET` / `LLM_API_KEY` 等放进密封卷（`SECRETS_DIR`）或 Vault 类网关（`SECRETS_URL` + `SECRETS_TOKEN`），`SECRETS_PROVIDER=auto|file|http`；托管源启用后**不再回落 .env**，配 `REQUIRE_SECRETS_PROVIDER=true` 让"密钥没注入"变成启动即错。`REQUIRE_DB_TLS=true` 时 `DATABASE_URL` 必须带 `sslmode=verify-full`（`prefer` 会静默降级，不算数）。
+9. **会话与浏览器（P0-4）**：`SESSION_IDLE_MINUTES=30`（空闲自动失效）、`AUTH_COOKIE_MODE=true`（令牌只走 HttpOnly Cookie + CSRF，需 HTTPS 与同源部署）。切 Cookie 模式前先用普通账号验证"登录 → 刷新页面 → 仍在线"，并在浏览器确认 Cookie 带 `HttpOnly` + `Secure`。
+10. **审计强化（P0-3）**：`AUDIT_APPEND_ONLY=true`（DB 触发器拒绝改/删审计行）、`AUDIT_SHIP_ROWS=true`（每批审计行副本外送）。上线后确认 `GET /api/admin/audit/verify` 的 `ok=true`、`GET /api/admin/audit/anchor` 的 `row_copies` 随业务增长，且 `bad_signature=0`。**换过 `AUDIT_ANCHOR_HMAC_KEY` 后**，旧记录会显示为 `stale_key_records>0`（指纹不同、不可验证但可解释），新增记录仍应 `bad_signature=0`；巡检响应里的 `key_id` 是当前密钥指纹，用它区分"密钥轮换"与"记录被伪造"。
+11. **升级与灾备（P0-6）**：发布顺序固定为"备份 → `alembic upgrade head` → 前端构建 → 启服务"，详见 [`docs/BACKUP-RESTORE.md`](docs/BACKUP-RESTORE.md)；上线前必须完成**一次**恢复演练（`scripts/pg_backup.py restore` 到独立库并跑 `smoke.py`）并留记录。
+12. **巡检手段**：`GET /api/health` 的 `jwt_secret` 字段为 `configured` / `ephemeral`——脚本可断言其不为 `ephemeral`；`embed_mode` 应为 `api` 而非 `local`。
+13. **第三方许可**：`THIRD-PARTY-NOTICES.md`（仓库根，`python scripts/generate_third_party_notices.py` 生成）——升级任何依赖后必须重跑；已知传染性许可 certifi（MPL-2.0）/ psycopg（LGPL-3.0）均与 Apache-2.0 兼容，随分发提供许可文本即可。本轮新增 alembic（MIT，含 Mako/MarkupSafe 依赖），生成脚本会一并覆盖。
 
 ## 三之三、离线安装（内网无外网环境）
 
@@ -347,8 +363,10 @@ pip install --no-index --find-links=wheels/ -r requirements-lock.txt
 
 ```bash
 cd backend
-python smoke.py          # 257 项断言，报告落在 backend/.smoke_report.txt
-python run_httpcheck.py  # 对真实运行中的服务做 26 项 HTTP 断言（需先启动服务）
+python smoke.py            # 262 项断言，报告落在 backend/.smoke_report.txt
+python run_httpcheck.py    # 对真实运行中的服务做 41 项 HTTP 断言（Bearer 模式，需先启动服务）
+# Cookie 会话模式（AUTH_COOKIE_MODE=true 启动）：令牌只走 HttpOnly Cookie + CSRF 双提交
+python cookie_mode_check.py   # 14 项断言（HttpOnly / SameSite / CSRF 缺失与错值均 403 / 登出清 Cookie）
 ```
 
 认证链路的**真联调**（都打真实端口，不是 TestClient）：
@@ -383,7 +401,7 @@ python killport.py
 
 `.github/workflows/ci.yml` 在每次 push / PR 上跑两道闸，**不需要任何自建 runner 或外部服务**：
 
-- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（746 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
+- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（842 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
 - **frontend**：Node 20，`npm ci || npm install` 后 `vite build`，产物作为 artifact 保留 7 天。
 - 同一分支新推送会取消旧运行（`concurrency`）；测试只需 PostgreSQL，所以**自建 Gitea/GitLab CI 也照这个顺序抄**：起 PG 16 + pgvector → 建扩展 → 装 `requirements.txt` → `pytest` → `npm run build`。
 
@@ -391,7 +409,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 `http_check.py` 自带夹具重置（清空拼图账本 + 删除历次遗留的同名测试样本集），因此**可反复执行且结果稳定**——持久库上重复跑不会因累积的限流状态或重复样本稀释覆盖率而误报。
 
-`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮闭环项 4 专项：**审计锚点外置（只追加文件/HTTP 网关 + HMAC 验签 + 启动比对 + 截断检出）、跨 worker 共享登录失败计数（并发不丢计数、db 故障回落 memory）、IdP claim → 本地权限同步（白名单/密级上限/严格模式）、真实 HTTP IdP 上的 claim 同步端到端**。当前 pytest **746/746**、smoke **257/257**、HTTP 端到端 **26/26** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。
+`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **842/842**、smoke **262/262**、HTTP 端到端 **41/41**（真实向量服务；离线 fake 向量下 40/41，仅"绝密附注语义召回"一条依赖向量质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。
 
 ---
 
@@ -412,13 +430,41 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 ---
 
+## 五之三、六条 P0 闭环（第四轮，已落地）
+
+上线评估给出的 6 条 P0 逐条落地。每条都按"攻击场景 → 机制 → 可验证证据"写清楚，
+便于评审与测评机构对照；配置项见 `.env.example` 对应分组。
+
+| # | P0 缺口 | 攻击/事故场景 | 本轮实现 | 证据 |
+|---|---|---|---|---|
+| P0-1 | 账号权限变更无第二人复核 | 管理员（或被盗的管理员账号）一次 PATCH 把某人密级从「内部」抬到「绝密」、或给新账号加 `admin`；审计再全也只是事后追责 | `app/approval.py`：**放宽**（新增角色/升密/停用→启用/改挂部门）→ 只建待审单、**库不动**；**收紧**（去角色/降密/停用）→ 立即生效（安全方向不能被流程拖慢）。四条硬规则：申请人不能批自己的单；目标账号本人不能批；审批人密级 ≥ 目标密级；**最后一名启用中的 admin 不能被降权/停用**（409）。建号即写 `status=granted` 的授权记录 | `tests/test_privilege_approval.py`（20 例，含"两个管理员同时点通过"的并发用例：去掉 `with_for_update` 时同一单会被批两次、用例必失败）；smoke「9.5」改为"先建复核人 → 申请人提交 → 复核通过前权限一点没放宽 → 通过后原 token 立即生效"，并覆盖"降密当场生效"与"改挂部门排队" |
+| P0-2 | 传输与浏览器边界未收口 | 反代漏配 → 明文传输、无 nosniff/无 frame 保护、任意站点可跨域带凭据调 API、DNS rebinding、上传的 TXT 被当 HTML 执行 | `app/httpguard.py`：`SecurityHeadersMiddleware`（nosniff / `X-Frame-Options: DENY` / Referrer-Policy / Permissions-Policy / CSP / HSTS 仅 HTTPS / `/api` no-store）、`HTTPSRedirectMiddleware`（308，健康探针豁免）、`CORSGuardMiddleware`（**默认不同源**，白名单才回声 origin，预检直接 204）、`TrustedHostMiddleware`、`DISABLE_DOCS` | `tests/test_http_guard.py`（21 例，含"真实 main.py 的 SecurityHeaders 必须最外层"与"Host 白名单 400 也带安全头"两例——中间件顺序写错不影响功能，只会让被拒请求丢掉安全头，单测单个中间件看不出来）；HTTP 端到端真机断言安全头齐全 + 非白名单预检 403 + 500 响应也带安全头；`is_https()` 是 HSTS / 跳转 / Cookie `Secure` 的统一判定口径（`tests/test_sessions.py` 覆盖反代 `X-Forwarded-Proto` 两种取值） |
+| P0-3 | 审计证据仍有单点 | ① DBA 一条 `UPDATE/DELETE` 抹掉证据；② 改中间行 + 重算其后哈希 + 保留正确尾哈希 → 只有锚点时仍能对上 | ① PG 触发器拒绝 `UPDATE/DELETE/TRUNCATE`，破窗仅限本事务 `SET LOCAL finrag.audit_append_only='off'`；② 每批新增审计行（`seq/row_hash/prev_hash/ts/action/decision/user/ip`，**不含 query 正文**）与链尾锚点写进同一个只追加流（`kind=audit_rows` / `audit_anchor`），sink 侧可独立重建时间线 | `tests/test_audit_append_only.py`（9 例）+ `tests/test_audit_anchors.py`（17 例，含"尾部 300 条行副本把锚点挤出 200 行窗口后，启动比对仍必须报截断"——只扫尾部会让截断检测在最需要它的时刻静默失效）；`GET /api/admin/audit/anchor` 真机返回 `row_batches/row_copies/bad_signature=0`、`key_id`（当前密钥指纹）与 `stale_key_records`（轮换前的旧密钥记录，单列且不参与链尾裁决）；smoke 的"篡改/删行"用例改为显式破窗后仍能检出 |
+| P0-4 | 会话生命周期不够严 | 令牌签发后 12 小时内一直有效；"退出登录"只删前端存储；localStorage 令牌可被 XSS 带走 | `auth_sessions` 表（sid 进 JWT，仅存元数据不存令牌）：空闲超时 `SESSION_IDLE_MINUTES`（到期即吊销并落 `revoked_reason`）、单端吊销（登出只踢本端）、全端吊销（`logout/all` 换代次）、设备列表与踢端接口；`AUTH_COOKIE_MODE=true` 时令牌只走 HttpOnly Cookie + 双提交 CSRF（`X-CSRF-Token`） | `tests/test_sessions.py`（19 例，含空闲超时与反代 `Secure` 口径）；真机：多端登录成 2 条会话 → 踢一端另一端不受影响 → `logout/all` 后 401；`cookie_mode_check.py`（14 项）验 HttpOnly/SameSite/CSRF 缺失 403/错误 CSRF 403/登出清 Cookie |
+| P0-5 | 密钥与静态数据保护不足 | 密钥以明文躺在应用主机 `.env`；"以为在托管、实际在用明文"这种半吊子状态连告警都不产生 | `app/secrets_provider.py`：`SECRETS_PROVIDER=file|http`（密封卷 / Vault 网关，无新依赖）；托管源启用后**不再回落 .env**；`REQUIRE_SECRETS_PROVIDER=true` 时关键密钥缺失即拒绝启动；`REQUIRE_DB_TLS=true` 要求连接串 `sslmode=require|verify-ca|verify-full`（`prefer` 会静默降级，不算数） | `tests/test_secrets_provider.py`（20 例，file/http 适配器均用临时卷 + 本地 HTTPServer 实测） |
+| P0-6 | 升级与灾备无工程化 | 结构变更没有版本记录、出事故无法定位/回滚；备份没被验证过等于没备份；审计留存 < 6 个月 | `alembic.ini` + `alembic/versions/0001_baseline.py`（与 `create_all`/`ensure_schema` 等价且幂等，存量库只写一行版本号）；`scripts/pg_backup.py`（备份 + sha256 + 清单含**审计链尾/行数/alembic 版本** + 轮转；`verify`；`restore` 自动比对三项）；`scripts/audit_archive.py`（≥6 个月留存归档，链校验不过拒绝导出）；`docs/BACKUP-RESTORE.md` | **真机演练已完成**（记录见 runbook §5.2）：空库与存量库 `alembic upgrade head` 均通过且幂等；备份 131,898 字节 → `verify` 哈希一致 → 恢复到独立演练库后 `audit_tail_seq_match / audit_tail_hash_match / alembic_version_match` **全 true**、逐表行数一致；归档 `--months 3` 被拒、断链库被拒、干净链库导出 171 行且包内链自洽。CI 增加 `alembic upgrade head`（跑两次验幂等）与触发器存在性检查 |
+
+**取舍与边界（写清楚比藏起来好）**
+
+- 权限放宽的判定以"新增角色/升密/启用/改挂部门"为准，**同时摘掉 `admin` 不算放宽**（"管理员降级为访客"是净收紧，不能被流程拖慢）。
+- 审批单为"放宽类"时**不改库**：审批通过前目标账号的密级/角色保持原值，避免出现"审批被驳回但权限已生效"。
+- 审计只追加触发器挡不住超级用户（`session_replication_role=replica` 可关触发器）——那属"DBA 作恶"边界，靠 P0-3 的外置行副本对账。
+- 会话空闲超时是**服务端判定**（不依赖前端心跳）；`SESSION_TOUCH_SECONDS` 只控制 `last_seen_at` 回写频率，避免每请求一次 UPDATE。
+- Cookie 模式下前端 `localStorage` 不落任何令牌（只留模式标志位）；CSRF 是双提交 Cookie，需要前端读同名非 HttpOnly Cookie 并回填 `X-CSRF-Token`（见 `frontend/src/session.js`）。
+- 未闭环（已在「七」与 `docs/BACKUP-RESTORE.md` 声明）：SAML 2.0、部门 claim → 部门树、口令历史/定期改密、通用 API 频控、PITR、SCA/渗透测试。
+
+---
+
 ## 六、关键 API
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/auth/login` | 口令登录。未绑定动态口令 → 直接返回 JWT；已绑定 → 返回 `mfa_required` + 5 分钟挑战票据（不含 token） |
 | POST | `/api/auth/login/mfa` | 第二步：挑战票据 + TOTP 动态口令 → JWT（同一个码在窗口内不可重放，错码计入账号级锁定）。也接受 `recovery_code`：手机丢失/换机时用一次性恢复码替代动态口令，响应带 `recovery_codes_remaining`，剩余 ≤2 时附 `recovery_warning` |
-| POST | `/api/auth/logout` | 登出并递增会话代次（旧令牌立即 401） |
+| POST | `/api/auth/logout` | 登出：**只吊销当前会话**（`sid`），其它设备不受影响；Cookie 模式同时清 Cookie |
+| GET | `/api/auth/sessions` | 当前账号的有效设备会话列表（`id`/`created_at`/`last_seen_at`/`ip`/`user_agent`/`current`），已过期与已吊销的不返回 |
+| POST | `/api/auth/sessions/{sid}/revoke` | 吊销自己某台设备的会话（不能吊销别人的；已吊销的返回 404） |
+| POST | `/api/auth/logout/all` | 退出全部设备：吊销该账号所有会话并 `token_version` +1（手机丢失/怀疑泄露时的止血动作） |
 | POST | `/api/auth/change-password` | 改密（首登强制改密即走这里），返回新令牌 |
 | GET | `/api/auth/providers` | 登录页能力探测（TOTP 是否可用 / OIDC 是否启用 + 按钮文案），不含任何配置细节 |
 | POST | `/api/auth/totp/setup` | 生成待绑定 TOTP 密钥（返回 `secret` 与 `otpauth://`），需口令再验 |
@@ -429,6 +475,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 | GET | `/api/auth/oidc/callback` | IdP 回调：验 state/nonce/iss/aud/alg → 种 2 分钟一次性交接票据 → 302 到前端 `/#/sso` |
 | POST | `/api/auth/oidc/session` | 用交接票据换正式 JWT（令牌从不进 URL） |
 | POST | `/api/admin/users/{id}/mfa-reset` | 管理员重置某账号的动态口令（同时作废其全部恢复码、吊销旧会话），响应 `recovery_codes_dropped` 为作废数量 |
+| POST | `/api/admin/users/{id}/revoke-sessions` | 管理员强制下线某账号的全部会话（不能对自己的账号执行，防误点自断）：口令泄露/人员交接时止血，响应 `revoked` 为吊销数量 |
 | GET | `/api/docs` | 仅返回当前用户可见文档（含切片级最高密级标记） |
 | POST | `/api/docs` | 文本录入（自动切片 + 段落级密级探测 + 向量化 + 敏感信息统计） |
 | POST | `/api/docs/upload` | 文件上传（PDF/Word/Excel/Markdown/TXT） |
@@ -438,10 +485,10 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 | POST | `/api/chat` | 问答：返回答案 + 引用溯源 + `intent`（意图网关）/ `verify`（双校验指标）/ `jigsaw`（防拼图）/ `fail_secure`（降级标记）/ 拦截脱敏状态 |
 | GET | `/api/admin/audit` | 审计日志（限管理员/合规），可按 `decision` 筛：deny/abstain/mask/throttle/**block**/**constrain**/**degrade**；返回行带 `prev_hash`/`row_hash` |
 | GET | `/api/admin/audit/verify` | 审计链完整性校验（限管理员）：改内容/删行/序号断档检测，断链自动记 system 告警 |
-| GET | `/api/admin/audit/anchor` | 审计锚点状态（限管理员）：本地锚点 + 外置锚点最近记录（`sig_ok` 标注签名是否通过） |
+| GET | `/api/admin/audit/anchor` | 审计锚点状态（限管理员）：本地锚点 + 外置副本统计（`anchor_records` 链尾锚点数 / `row_batches` 行副本批数 / `row_copies` 副本审计行数，可回库 `count(*)` 对账；`bad_signature` 为验签失败数、`stale_key_records` 为"上一次密钥签的历史记录"（轮换后正常出现，两者必须分开看；`key_id` 是当前密钥指纹）。展示只读尾部 500 行，**启动比对另扫 2 万行**——行副本密集时尾部几百行可能一条锚点都没有，只扫 200 行会让截断检测静默失效） |
 | POST | `/api/admin/audit/anchor` | 立即把当前链尾外发到外置锚点（限管理员；未配置 sink 返回 400，写入失败 503） |
-| GET | `/api/admin/approvals` | 权限变更审批队列（限管理员）：密级 / 访问范围 / 新增授权，返回 `summary`、申请人、状态与处理结果 |
-| POST | `/api/admin/approvals/{id}/approve` | 复核通过（申请人不能自批；降密需审批人密级不低于目标密级），通过即落变更 |
+| GET | `/api/admin/approvals` | 权限变更审批队列（限管理员）：密级 / 访问范围 / 新增授权 / **账号权限（user_privilege）**，返回 `summary`、`subject_type`、`target`、申请人、状态与处理结果 |
+| POST | `/api/admin/approvals/{id}/approve` | 复核通过（申请人不能自批；目标账号本人不能批；审批人密级不低于目标密级；最后一名 admin 不可被降权），通过即落变更 |
 | POST | `/api/admin/approvals/{id}/reject` | 驳回（必须填理由），审批单置 `rejected` |
 | GET | `/api/admin/jigsaw` | 拼图攻击风险榜（限管理员）：按累积披露比例排序的高危组合 |
 | GET | `/api/admin/stats` | 文档数、切片数、近 7 日拦截/限流/意图阻断降级次数、防拼图高危数、运行模式 |
@@ -533,17 +580,17 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 ## 七、生产化待办（P0 已完成，其余未实现，请务必补齐）
 
-- 传输与静态加密：HTTPS 强制、数据库 TDE/列加密，密钥交由 KMS 托管
-- 账号体系对接企业 SSO（OIDC 授权码 + PKCE 已实现，见「二·4」；IdP claim → 本地角色/密级同步已实现并默认关闭，见「八」；仍缺：SAML 2.0、部门 claim 自动同步到本地部门树），JWT 改为短时 access token + refresh token（当前 JWT 已做到"不携带权限声明、每次请求回库取最新态"，过期时间仍偏长）
+- ~~传输与静态加密：HTTPS 强制、数据库 TDE/列加密，密钥交由 KMS 托管~~ → **已闭环（P0-2 / P0-5）**：应用层安全头、CORS 白名单、`FORCE_HTTPS` + HSTS、Host 白名单、`DISABLE_DOCS` 均已落地；密钥可走密封卷 / Vault 网关（`SECRETS_PROVIDER`，启用后不回落 .env），`REQUIRE_DB_TLS=true` 强制 `sslmode=verify-*`。**仍缺**：数据库静态加密（TDE / pgcrypto 列加密）属 DB 侧配置，应用只负责"链路必须 TLS"；凭据轮换的自动化（当前靠双密钥并存的窗口期人工收尾）
+- 账号体系对接企业 SSO（OIDC 授权码 + PKCE 已实现，见「二·4」；IdP claim → 本地角色/密级同步已实现并默认关闭，见「八」；仍缺：SAML 2.0、部门 claim 自动同步到本地部门树），JWT 改为短时 access token + refresh token（当前 JWT 已做到"不携带权限声明、每次请求回库取最新态"，过期时间仍偏长；**服务端会话表已落地空闲超时与精确吊销**，见「八」）
 - 口令与多因子已落地：管理员建号/重置 → 首登强制改密（服务端 403 硬闸）；改密口径为 ≥12 位 + 四类中至少三类 + 弱口令表 + 禁止含用户名 + 禁止与旧口令相同；哈希升到 PBKDF2-HMAC-SHA256 60 万次并支持登录时透明升级旧 12 万次哈希；改密/重置/登出/重置动态口令均令 `token_version` +1，旧令牌立即失效；TOTP 双因子（RFC 6238，密钥 Fernet 加密入库、窗口内防重放、绑定/解绑均需口令再验）与一次性恢复码（手机丢失自助登录，摘要存储、一码一用、可整组重生成）已实现；登录失败计数已改为跨 worker 共享（PG 表 + 行锁，故障回落进程内）。仍缺：口令历史比对
-- 管理员操作二次审批已覆盖密级变更、访问范围（acl_mode/归属部门）变更与 allow 授权，并已提供**审批中心前端页面**（`/#/approvals`，待办/已办、自审拦截、驳回必填理由）
+- 管理员操作二次审批已覆盖密级变更、访问范围（acl_mode/归属部门）变更、allow 授权与**账号权限放宽**（`user_privilege`），并已提供**审批中心前端页面**（`/#/approvals`，待办/已办、自审拦截、驳回必填理由）；最后一名启用中的管理员受保护（不可被降权/停用），新建账号的初始授权写入 `status=granted` 的审批留痕
 - 水印与防截屏：答案面板叠加用户工号暗水印，便于事后定责
 - 大模型侧加固：提示词注入检测、输出 Topic Guard（当前意图网关为规则 + 归一化 + 锚句相似度口径，未接模型分类器）
 - 多账号合谋防御：当前拼图防护按单账号记账，N 个低权限账号各取一块线下合并需要跨用户关联分析，未实现
 - 向量重建保护：文档降密已强制走双人复核审批（不可逆操作不落即生效）；仍缺：审批通过后对历史切片向量做版本化重建审计
 - 矩阵汇报组织架构：当前部门树 + 多主体 ACL 可覆盖多数场景，正式矩阵汇报（一人多线）需要显式副部门字段
 - 性能：万级以上切片建议换 Milvus 或 pgvector HNSW 索引、引入 Celery 异步入库管道
-- 备份与灾备：审计日志已上哈希链 + 本地锚点 + 外置锚点（只追加文件 / POST 日志网关），生产建议把外置锚点正式接到 WORM 存储或独立日志库（SIEM），并单独配置 `AUDIT_ANCHOR_HMAC_KEY`（不复用 JWT 密钥）
+- ~~备份与灾备~~ → **已闭环（P0-6）**：结构变更进 Alembic（`alembic upgrade head`，CI 每次在空库上跑一遍）；`scripts/pg_backup.py` 备份 + 校验 + 恢复（清单含审计链尾与 alembic 版本，恢复后自动比对）；`scripts/audit_archive.py` 做 ≥6 个月留存归档；完整 runbook 见 [`docs/BACKUP-RESTORE.md`](docs/BACKUP-RESTORE.md)。**仍缺**：PITR（WAL 归档）、跨机房切换、季度演练尚未真正执行过一次（首演应在正式上线前完成并留记录）
 
 ---
 
@@ -553,7 +600,9 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 - 文档删除为物理删除并级联清理切片，如需保留请改为软删除（各类数据的保留/删除矩阵见「九、数据保留与删除」）。
 - **登录防爆破默认使用共享计数**（`app/loginthrottle.py`）：`LOGIN_THROTTLE_BACKEND=auto`（默认）时用 PG 单表 `login_attempts`，多 worker 读同一份计数；`SELECT ... FOR UPDATE` 把"读计数 → 判定 → 写锁定"串行化，并发失败不丢计数。计数存储不可用时自动回落进程内计数并 30 秒后重试——回落期阈值按单进程累计，属于可用性优先的降级，不会让登录整体不可用。单 worker/离线诊断可显式设 `memory`。
 - **锁定是用可用性换保密性的标准取舍**：攻击者可故意输错把他人账号锁 `LOGIN_LOCK_MINUTES`（默认 15）分钟；应用内没有"提前解锁"端点（解锁入口本身就是绕过面），到期自动恢复。紧急情况下可清空计数表（`DELETE FROM login_attempts WHERE key=...`）或重启进程。阈值可用 `LOGIN_MAX_FAILS` / `LOGIN_WINDOW_MINUTES` / `LOGIN_LOCK_MINUTES` 调整。
-- **会话吊销是"全端下线"而非单端精确吊销**：`users.token_version` 每次改密 / 管理员重置 / 登出 / 重置动态口令 +1，校验时 `payload.ver != user.token_version` 即 401，所以旧令牌会立即失效；代价是把该账号其它端的会话也一并踢掉。单端精确吊销需要 jti 黑名单表，属后续增强。停用账号同样是即时生效的（每次请求回库校验 `status`）。
+- **会话吊销已做到"单端精确 + 空闲超时"**（P0-4，`auth_sessions` 表）：令牌携带 `sid`，`POST /auth/logout` 只吊销当前会话（其它设备不受影响）；`POST /auth/logout/all`、改密、管理员重置动态口令、管理员强制下线则整体吊销（含 `token_version` +1）。空闲超过 `SESSION_IDLE_MINUTES`（默认 30）自动失效并落 `revoked_reason=idle_timeout`；`SESSION_TOUCH_SECONDS` 控制 `last_seen_at` 回写节流（默认 60 秒一次，避免每请求一次 UPDATE）。历史令牌（无 `sid`）仍可验证，属于向后兼容过渡；会话表只存元数据（sid/user/ip/UA/时间），**不存令牌本身**，DB 泄露不等于拿到可用凭据。多 worker 部署下会话表天然共享（同一库），无需粘性会话。
+- **Cookie 会话模式默认关闭**（`AUTH_COOKIE_MODE=false`，即沿用 Authorization: Bearer）：开启后令牌只走 HttpOnly Cookie（JS 读不到，XSS 拿不走），写操作必须带双提交 `X-CSRF-Token`（读 `CSRF_COOKIE_NAME` 那一枚非 HttpOnly Cookie 回填）。代价与边界：① 前端与 API **必须同源**，或把前端域名精确写进 `CORS_ALLOW_ORIGINS`（凭据型跨域不允许 `*`）；② 必须部署在 HTTPS 下（`AUTH_COOKIE_SECURE=auto` 时 https 才加 `Secure`）；③ 反向代理若改写 `Set-Cookie` 路径/域，登录会表现为"登上了但下一请求 401"，排查先看浏览器里 Cookie 的 Domain/Path/Secure。
+- **审计表只追加是 DB 层强约束**（`AUDIT_APPEND_ONLY=true`）：PG 触发器拒绝 `UPDATE` / `DELETE` / `TRUNCATE`，报错信息里带破窗指令。边界：超级用户可用 `SET session_replication_role = replica` 临时关掉触发器——那属于"DBA 作恶"面，靠外置行副本（`AUDIT_SHIP_ROWS`）对账检出。演练/取证需要改行时只能在同一事务内 `SET LOCAL finrag.audit_append_only = 'off'`，应用代码永不下发该开关；归档请用 `scripts/audit_archive.py`（只导不删），在线表不要 DELETE。
 - **TOTP 的三个口径**（`app/totp.py`）：① 允许 ±1 个时间步时钟漂移（30 秒），再宽就是给爆破让路；② 同一口令在同一窗口内用过一次即作废（防重放），所以"刚绑定完/刚登录完又立刻提交同一个码"会提示等待验证器刷新，这是预期行为；③ 密钥入库前用 Fernet 加密，密钥材料来自 `MFA_SECRET_KEY`（缺失则由 `JWT_SECRET` 派生）——两者都缺时**拒绝绑定**而不是明文存第二因子；轮换该密钥会让已绑定密钥无法解密，需走管理员「重置动态口令」。
 - **一次性恢复码（手机丢失/换机的自助出口）**：绑定动态口令成功即发放 `RECOVERY_CODE_COUNT`（默认 10）个码，形如 `ABCD-EFGH-JKLM`——12 位 × 32 字符表（去掉 0/O/1/I/L 等易混字符，约 60 bit 熵），服务端只存 HMAC-SHA256 摘要（密钥由 `MFA_SECRET_KEY` 派生），明文仅在发放/重新生成的那一次响应里返回。每个码用过即标 `used_at`，**一个码只能登录一次**；登录仍要先验口令（恢复码只替代第二因子，不是登录凭证）。剩余 ≤2 时登录响应带 `recovery_warning`，用尽后明确提示"联系管理员"。失效面：重新生成（需口令再验）整组作废旧码；解绑动态口令、管理员「重置动态口令」都会清空恢复码。`RECOVERY_CODE_ENABLED=false` 可应急关闭该通道（存量码立即失效）。
 - **OIDC 认证之外，IdP claim → 本地权限同步是可选且默认关闭的**（`app/idp_sync.py`）：`OIDC_CLAIM_SYNC=true` 后只认 `OIDC_ROLE_MAP` / `OIDC_CLEARANCE_MAP` 白名单映射（`fin_research:research` 这类"IdP 值:本地值"），claim 里没登记的值按 `OIDC_CLAIM_SYNC_UNKNOWN=ignore` 忽略或 `deny` 拒绝本次登录；**密级上限** `OIDC_CLAIM_SYNC_MAX_CLEARANCE`（默认 1=内部）保证 IdP 侧配错也不会把人抬到绝密，且同步只升不降（降密仍必须走本地双人复核审批）；`admin` 需额外开关 `OIDC_CLAIM_SYNC_ALLOW_ADMIN`，本地已授予的 admin 不会被 claim 抹掉；**claim 缺失不等于收权**（IdP 漏配 claim 时保持本地角色），只有 claim 明确下发空列表才收回同步得来的角色。每次实际变更写一条 `action=idp_claim_sync` 审计。仍缺：部门 claim → 本地部门树同步、SAML 2.0。
@@ -571,11 +620,12 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 |---|---|---|---|
 | 文档行 / 切片（Chunk）/ 版本快照（DocumentVersion）/ 待批审批单（pending ApprovalRequest） | `DELETE /api/docs/{id}`（管理员或上传人，`docs.py:336-353` + `models.py:118` 级联） | 随文档物理删除，**无软删/回收站** | 物理删除是明确语义；要保留请改软删（见「八、已知限制」） |
 | 上传原件 | 无——**从不落盘** | 解析期间写 `DATA_DIR/tmp/`，`finally` 保证用后即删（含解析失败路径，`ingest.py:87-101`） | 库内只存提取文本，原文落盘会成倍放大泄露面。进程被强杀可能残留 tmp 文件，由部署侧定期清理 |
-| 审计日志（AuditLog） | 无自动删除 | 长期保留 | 哈希链 + 合规不可抵赖：删行会直接破坏链与断档检测（见「十」） |
+| 审计日志（AuditLog） | 无自动删除，且 **DB 触发器拒绝 UPDATE/DELETE/TRUNCATE**（`AUDIT_APPEND_ONLY=true`） | 在线长期保留；离线归档 ≥6 个月（`scripts/audit_archive.py`，只导不删） | 哈希链 + 合规不可抵赖：删行会直接破坏链与断档检测（见「十」） |
 | 暴露账本（ExposureLedger） | 无自动删除 | 物理行不回收（`window_key` 只是逻辑过期，不影响历史行） | 防拼图安全证据。默认不加保留期；机构要保留策略请走 DB 侧归档，不要直接 DELETE |
 | 运维日报 markdown（`backend/reports/*.md`） | `POST /api/admin/metrics/cleanup`（仅管理员）或定时任务 | `METRICS_RETENTION_DAYS`，默认 90 天 | 纯运维产物：删掉不影响任何安全判定，只是看板回溯窗口变短 |
 | 审计锚点（`data/audit_anchor.json`） | 无自动删除 | 与库同生共死 | 删尾行攻击的检测基准，见「十」 |
-| 外置审计锚点（`AUDIT_ANCHOR_EXTERNAL_FILE` / 日志网关） | 无自动删除 | 由托管方（WORM 卷 / SIEM）按合规策略保留 | 应用无回写权限的独立副本，用于检出"库 + 本地锚点"被同步重写 |
+| 外置审计副本（`AUDIT_ANCHOR_EXTERNAL_FILE` / 日志网关） | 无自动删除 | 由托管方（WORM 卷 / SIEM）按合规策略保留（≥6 个月） | 应用无回写权限的独立副本：`kind=audit_anchor` 检出"库 + 本地锚点"被同步重写/截断；`kind=audit_rows` 是每批审计行副本，用于重建时间线并对账"库里有没有少行/换行" |
+| 登录会话（`auth_sessions`） | 登出/单端吊销/全端吊销/空闲超时/改密/管理员踢端即置 `revoked_at`；无自动物理删除 | 行内元数据（sid/user/ip/UA/时间），不含令牌 | 会话事实来源。物理清理属运维动作（建议按 `created_at` 归档，勿在运行时删表）；审计侧已有 `login`/`logout`/`session_revoke` 留痕 |
 | 登录失败计数（`login_attempts`） | 成功登录即删对应行；窗口/锁定到期惰性清理 | 最长约 `LOGIN_WINDOW_MINUTES + LOGIN_LOCK_MINUTES`（默认 20 分钟） | 纯运行时状态，不含口令/失败原因；需要审计证据的登录结果已进审计日志 |
 
 两个"不删"是刻意设计而非遗漏：审计日志删了就没法证明"当时发生了什么"，账本删了就没法复盘"谁累计搬走了多少"。合规上的删除权请走 DB 侧归档/脱敏管道，不要在应用层开"清库"后门。`POST /api/admin/metrics/cleanup` 是唯一会删文件的管理端点，且只碰 `reports/*.md`、只按文件名日期判定新旧（解析不了名字的文件一律不动）。
@@ -591,6 +641,8 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 | 改某行的业务字段（谁/做了什么/结果） | ✅ | 逐行重算 `row_hash`（`audit.py:349`，返回 `broken_rows`） |
 | 删中间某行 | ✅ | 邻链断裂（`broken_links`）+ `seq` 断档（`seq_gaps`） |
 | 删任意行（含删尾行） | ✅ | `seq` 单调序号断档统计；删尾行另由重启时的锚点比对检出（`resume_chain` + `data/audit_anchor.json`） |
+| 改中间某行的**业务字段**并重算其后所有哈希、保留正确尾哈希 | ✅（配置外置行副本后）/ ❌（只配锚点时） | 锚点只能回答"尾行对不对"；开了 `AUDIT_SHIP_ROWS`（默认开）后，每批新增行（`seq`+`row_hash`+摘要）都在独立 sink 里有副本，逐行比对即可定位被换掉的那一行（`GET /api/admin/audit/anchor` 的 `row_copies` 与库内 `count(*)` 亦可粗粒度对账） |
+| DB 层直接 `UPDATE` / `DELETE` / `TRUNCATE` | ✅ | `AUDIT_APPEND_ONLY=true` 时由 PG 触发器直接拒绝（`insufficient_privilege`），绕过只能靠超级用户关触发器（见「八」） |
 | 拿到**库写 + 磁盘写**双权限的整体重写 | ✅（配置外置锚点后）/ ❌（未配置时） | 未配置 sink 时攻击者可重算全链并同步篡改本地锚点；配置 `AUDIT_ANCHOR_EXTERNAL_FILE`（应用只能追加、无回写权限的卷）或 `AUDIT_ANCHOR_URL`（SIEM/日志网关）后，重启时把库内链尾与外置副本比对：序号对得上而哈希不同 = 尾行被改写；外置序号更大 = 尾行被截断删除。外置记录带 HMAC-SHA256 签名（`AUDIT_ANCHOR_HMAC_KEY`，缺省由 `JWT_SECRET` 派生），读回时 `sig_ok=false` 直接告警 |
 | `limit` 之外的更旧行 | ❌（不检） | `verify_chain` 按 `seq` 升序取前 N 条：`GET /api/admin/audit/verify` 默认 `limit=5000`、上限 20000。超长日志请分段校验或调大 limit |
 | 迁移前写入的历史行 | ❌（不在链上） | 返回体 `note` 字段已声明，视为 GENESIS 兼容段 |

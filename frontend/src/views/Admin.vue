@@ -27,13 +27,20 @@
       <el-table-column label="ID" width="300">
         <template #default="{ row }"><code class="uid">{{ row.id }}</code></template>
       </el-table-column>
-      <el-table-column label="操作" width="220">
+      <el-table-column label="操作" width="300">
         <template #default="{ row }">
           <el-button link type="primary" @click="open(row)">编辑</el-button>
           <el-popconfirm title="重置后该账号需重新绑定动态口令，且其所有会话立即失效。确认？"
                          @confirm="resetMfa(row)">
             <template #reference>
               <el-button link type="warning">重置动态口令</el-button>
+            </template>
+          </el-popconfirm>
+          <!-- P0-4：强制下线（口令疑似泄露/人员交接时的止血动作） -->
+          <el-popconfirm title="将立即吊销该账号全部会话（已签发的令牌同时失效）。确认？"
+                         @confirm="kickSessions(row)">
+            <template #reference>
+              <el-button link type="danger">强制下线</el-button>
             </template>
           </el-popconfirm>
         </template>
@@ -61,7 +68,13 @@
           </el-select>
         </el-form-item>
         <el-form-item label="启用"><el-switch v-model="dlg.form.status" /></el-form-item>
+        <el-form-item label="变更理由">
+          <el-input v-model="dlg.form.reason" type="textarea" :rows="2"
+                    placeholder="必填建议：权限放宽须另一名管理员复核，复核人会看这条理由" />
+        </el-form-item>
       </el-form>
+      <el-alert class="tip" type="warning" :closable="false" show-icon
+                title="加角色 / 升密 / 停用→启用 / 改挂部门属于权限放宽，会进入审批队列由他人复核；降密、撤角色、停用即时生效。" />
       <template #footer>
         <el-button @click="dlg.open = false">取消</el-button>
         <el-button type="primary" @click="save">保存</el-button>
@@ -122,7 +135,7 @@ const board = ref([])
 async function loadBoard() {
   try { board.value = await admin.jigsaw() } catch (e) { /* 非管理员忽略 */ }
 }
-const dlg = reactive({ open: false, form: { id: '', username: '', display_name: '', password: '', dept_id: '', roles: [], clearance: 1, status: true } })
+const dlg = reactive({ open: false, form: { id: '', username: '', display_name: '', password: '', dept_id: '', roles: [], clearance: 1, status: true, reason: '' } })
 const levelType = (c) => ({ 0: 'success', 1: 'info', 2: 'warning', 3: 'danger' }[c] || 'info')
 
 async function load() {
@@ -135,8 +148,8 @@ async function load() {
 
 function open(row) {
   dlg.form = row
-    ? { id: row.id, username: row.username, display_name: row.display_name, password: '', dept_id: row.dept_id, roles: [...row.roles], clearance: row.clearance, status: row.status }
-    : { id: '', username: '', display_name: '', password: 'User@123', dept_id: '', roles: ['guest'], clearance: 1, status: true }
+    ? { id: row.id, username: row.username, display_name: row.display_name, password: '', dept_id: row.dept_id, roles: [...row.roles], clearance: row.clearance, status: row.status, reason: '' }
+    : { id: '', username: '', display_name: '', password: 'User@123', dept_id: '', roles: ['guest'], clearance: 1, status: true, reason: '' }
   dlg.open = true
 }
 
@@ -144,15 +157,31 @@ async function save() {
   try {
     const p = { ...dlg.form }
     if (dlg.form.id) {
-      await admin.updateUser(dlg.form.id, p)
+      const res = await admin.updateUser(dlg.form.id, p)
+      // P0-1：放宽类变更不会立即生效，服务端返回待审单信息
+      const ap = res?.approval
+      if (ap?.pending) {
+        ElMessage.warning(`权限放宽已提交审批（单号 ${ap.id}），复核通过后才生效`)
+      } else {
+        ElMessage.success('已保存（收紧类变更即时生效）')
+      }
     } else {
       await admin.createUser(p)
+      ElMessage.success('已创建（首次登录须改密，初始授权已写入审批记录）')
     }
-    ElMessage.success('已保存（新建/重置口令的账号首次登录须改密）')
     dlg.open = false
     await load()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
+  }
+}
+
+async function kickSessions(row) {
+  try {
+    const res = await admin.revokeSessions(row.id)
+    ElMessage.success(`已强制下线 ${res.revoked ?? 0} 个会话`)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '操作失败')
   }
 }
 

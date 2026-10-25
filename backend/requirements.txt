@@ -18,6 +18,9 @@ python-docx>=1.1
 openpyxl>=3.1
 psycopg[binary]>=3.1
 pgvector>=0.2.5
+# P0-6 结构变更工程化：Alembic 版本化迁移（启动期 create_all/ensure_schema
+# 仍保留作为兜底；发布流程以 alembic upgrade head 为准，见 docs/BACKUP-RESTORE.md）
+alembic>=1.13
 # P1 PDF 解析加固：表格结构化 / 多栏阅读顺序 / 渲染（OCR 前置）
 pdfplumber>=0.11
 pypdfium2>=4.30

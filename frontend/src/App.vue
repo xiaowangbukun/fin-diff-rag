@@ -102,6 +102,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auth } from './api'
+import { cachedUser, clearSession, hasSession, setSession, setUser } from './session'
 import RecoveryCodesDialog from './components/RecoveryCodesDialog.vue'
 
 const route = useRoute()
@@ -128,16 +129,18 @@ onMounted(async () => {
     localStorage.removeItem('finrag_flash')
     ElMessage.warning(flash)
   }
-  const cached = localStorage.getItem('finrag_user')
-  if (!localStorage.getItem('finrag_token')) return
+  const cached = cachedUser()
+  // cookie 模式下 localStorage 没有令牌（HttpOnly Cookie 才是凭据），
+  // 因此判据是"是否有可尝试的会话"，真假由 /auth/me 决定。
+  if (!hasSession()) return
   try {
     const me = await auth.me()
     user.value = me
     mustChange.value = !!me.must_change_password
     mfaSetup.value = !!me.mfa_setup_required
-    localStorage.setItem('finrag_user', JSON.stringify(me))
+    setUser(me)
   } catch (e) {
-    if (cached) user.value = JSON.parse(cached)
+    if (cached) user.value = cached
   }
   try {
     const h = await (await fetch('/api/health')).json()
@@ -155,9 +158,9 @@ async function submitChange() {
   pwd.loading = true
   try {
     const res = await auth.changePassword(pwd.old, pwd.next)
-    // 改密成功即换代次：旧令牌立即作废，必须换用服务端返回的新令牌
-    localStorage.setItem('finrag_token', res.token)
-    localStorage.setItem('finrag_user', JSON.stringify(res.user))
+    // 改密会吊销该账号的全部旧会话并重签本端会话：cookie 模式下新令牌走
+    // Set-Cookie，bearer 模式下走 res.token——统一交给 setSession 处理。
+    setSession(res)
     user.value = res.user
     mustChange.value = false
     pwd.old = pwd.next = pwd.confirm = ''
@@ -193,7 +196,7 @@ async function mfaConfirm() {
     }
     const me = await auth.me()
     user.value = me
-    localStorage.setItem('finrag_user', JSON.stringify(me))
+    setUser(me)
     ElMessage.success('动态口令已启用，后续登录需二次验证')
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '绑定失败')
@@ -201,9 +204,9 @@ async function mfaConfirm() {
 }
 
 function logout() {
+  // 服务端只吊销当前会话（其它设备不受影响，见“退出全部设备”）
   auth.logout().catch(() => {})
-  localStorage.removeItem('finrag_token')
-  localStorage.removeItem('finrag_user')
+  clearSession()
   user.value = null
   router.push('/login')
 }

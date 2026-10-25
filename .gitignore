@@ -5,6 +5,7 @@ backend/data/
 backend/reports/
 backend/.pytest_cache/
 backend/.httpcheck.txt
+backend/.cookiecheck.txt
 backend/.killport.txt
 backend/.smoke_report.txt
 **/__pycache__/
@@ -23,3 +24,7 @@ frontend/install_log.txt
 
 # 本地配置（含密钥，只提交 .env.example）
 .env
+
+# 备份产物（含全库数据与审计链尾，绝不入库）
+*.dump
+backups/

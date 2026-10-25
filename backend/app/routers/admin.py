@@ -8,7 +8,8 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from ..approval import (
-    decide, describe as approval_describe, summary as approval_summary,
+    decide, describe as approval_describe, grant_privileges_now,
+    request_user_change, summary as approval_summary,
 )
 from ..audit import write_log
 from ..config import ROLES
@@ -18,7 +19,9 @@ from ..models import ApprovalRequest, AuditLog, Chunk, Department, Document, Use
 from ..recovery import remaining as recovery_remaining
 from ..schemas import StatsOut
 from ..policy import invalidate_dept_cache
-from ..security import current_user, hash_password, require_admin
+from ..security import (
+    current_user, hash_password, require_admin, revoke_user_sessions,
+)
 from ..serializers import user_out
 from .auth import client_ip
 
@@ -36,6 +39,8 @@ class UserIn(BaseModel):
     roles: list[str] = []
     clearance: int = Field(default=1, ge=0, le=3)
     status: bool = True
+    # 授权变更的申请理由（P0-1 双人复核时给复核人看的依据）
+    reason: str = Field(default="", max_length=500)
 
     @field_validator("password")
     @classmethod
@@ -74,13 +79,20 @@ def create_user(body: UserIn, request: Request,
     pwd_hash, salt = hash_password(body.password or "Fin@123456")
     u = User(
         username=body.username.strip(), display_name=body.display_name or body.username,
-        dept_id=body.dept_id or None, roles=json.dumps(body.roles, ensure_ascii=False),
+        dept_id=body.dept_id or None, roles="[]",
         clearance=body.clearance, pwd_hash=pwd_hash, salt=salt, status=body.status,
         # 管理员知道初始口令 = 该口令不算用户私有凭证：首次登录必须换掉，
         # 否则管理员永远持有每个员工账号的可用口令（审计上不可辩护）。
         must_change_password=True,
     )
     db.add(u)
+    db.commit()
+    # P0-1：角色/密级是"授权"而不是"建档"，一律经授权组件落库——它同时
+    # 做角色白名单、最后一名管理员保护，并把"谁授予了什么"写成 granted
+    # 审批单（审批中心可追溯），而不是 delete 掉审批维度只留一条审计日志。
+    grant_privileges_now(
+        db, _, u, body.roles, body.clearance, body.status, body.dept_id,
+        reason="新建账号：初始授权（首次登录须修改初始口令）")
     db.commit()
     write_log(db, user=_, action="create_user", target_id=u.id, target_label=u.username,
               reason=(f"密级{body.clearance} 角色{','.join(body.roles) or '-'}"
@@ -122,30 +134,49 @@ def reset_mfa(uid: str, request: Request,
 
 @router.patch("/users/{uid}")
 def update_user(uid: str, body: UserIn, request: Request,
-                _: User = Depends(require_admin), db: Session = Depends(get_db)):
+                admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """改账号：**放宽类变更进审批队列，收紧类即时生效**（P0-1 双人复核）。
+
+    为什么按"放宽/收紧"分而不是一律排队：撤销权限、降密、停用是安全上
+    必须立刻生效的方向，卡审批只会让人绕过流程。放宽（加角色、升密、
+    停用→启用、改挂部门）则必须由另一个管理员复核。
+    """
     _assert_roles(body.roles)
     u = db.get(User, uid)
     if u is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
     before = f"密级{u.clearance} 角色{u.roles}"
+    # 非授权字段（显示名）可以直接改；口令重置见下
     u.display_name = body.display_name or u.display_name
-    u.dept_id = body.dept_id or None
-    u.roles = json.dumps(body.roles, ensure_ascii=False)
-    u.clearance = body.clearance
-    u.status = body.status
+
+    req, note = request_user_change(
+        db, admin, u,
+        to_roles=body.roles, to_clearance=body.clearance,
+        to_active=body.status, to_dept_id=body.dept_id,
+        reason=(body.reason or "").strip() or "管理员提交账号权限变更")
+
     if body.password:
         u.pwd_hash, u.salt = hash_password(body.password)
         # 管理员重置口令 = 管理员知道了新口令，必须让本人下次登录改掉；
         # 同时换代次，把重置前签发的所有会话踢下线。
         u.must_change_password = True
         u.token_version = int(u.token_version or 0) + 1
+        # 口令重置是收紧动作，不受审批阻塞：否则"有人泄露口令"时要先等
+        # 另一个人点通过才能止血，正好与应急方向相反。
+        revoke_user_sessions(db, u.id, reason="password_reset_by_admin")
     db.commit()
-    write_log(db, user=_, action="update_user", target_id=u.id, target_label=u.username,
-              reason=(f"{before} → 密级{u.clearance} 角色{u.roles}"
+    write_log(db, user=admin, action="update_user", target_id=u.id, target_label=u.username,
+              reason=(f"{before} → 密级{u.clearance} 角色{u.roles}；{note}"
                       + ("；已重置口令，下次登录须改密且旧会话失效"
                          if body.password else "")),
               ip=client_ip(request))
-    return user_out(db, u)
+    out = user_out(db, u)
+    out["approval"] = {
+        "pending": bool(req),
+        "id": req.id if req else "",
+        "message": note,
+    }
+    return out
 
 
 @router.post("/users/{uid}/reset-risk")
@@ -176,6 +207,30 @@ def reset_risk(uid: str, request: Request,
     }
 
 
+@router.post("/users/{uid}/revoke-sessions")
+def revoke_sessions(uid: str, request: Request,
+                    admin: User = Depends(require_admin),
+                    db: Session = Depends(get_db)):
+    """管理员踢掉某账号的全部会话（P0-4 单端/全端吊销的管理入口）。
+
+    典型场景：员工离职交接、疑似账号被盗、设备丢失。与"停用账号"的区别是
+    只断会话不改状态——账号还能重新登录（例如口令已泄露但暂不便停用）。
+    """
+    u = db.get(User, uid)
+    if u is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    if u.id == admin.id:
+        # 踢自己会让当前请求之后的页面全部 401，不给"误点即自断"的机会
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "不能在此踢掉自己的会话，请使用『退出全部设备』")
+    n = revoke_user_sessions(db, u.id, reason="admin_revoked")
+    db.commit()
+    write_log(db, user=admin, action="session_revoke", target_id=u.id,
+              target_label=u.username, decision="allow",
+              reason=f"管理员吊销该账号全部会话（{n} 个）", ip=client_ip(request))
+    return {"ok": True, "revoked": n}
+
+
 @router.get("/approvals")
 def list_approvals(_: User = Depends(require_admin),
                   db: Session = Depends(get_db)):
@@ -186,8 +241,16 @@ def list_approvals(_: User = Depends(require_admin),
     out = []
     for r in rows:
         frm, to = approval_describe(r)
+        target = ""
+        if r.subject_type == "user":
+            u = db.get(User, r.doc_id)
+            target = u.username if u else "（已删除账号）"
+        else:
+            d = db.get(Document, r.doc_id)
+            target = d.title if d else "（已删除文档）"
         out.append({
             "id": r.id, "doc_id": r.doc_id, "kind": r.kind,
+            "subject_type": r.subject_type, "target": target,
             "from_level": frm, "to_level": to,
             "summary": approval_summary(r),
             "requester": r.requester_name, "approver": r.approver_name,
@@ -203,17 +266,28 @@ class DecideIn(BaseModel):
     reason: str = ""
 
 
+def _approval_target(db: Session, req) -> tuple[str, str]:
+    """审批对象：返回 (类型中文, 展示名)。用户权限单的对象是账号而不是文档。"""
+    if req.subject_type == "user":
+        u = db.get(User, req.doc_id)
+        return "账号", (u.username if u else "（已删除账号）")
+    d = db.get(Document, req.doc_id)
+    return "文档", (d.title if d else "（已删除文档）")
+
+
 @router.post("/approvals/{aid}/approve")
 def approve_req(aid: str, body: DecideIn, request: Request,
                 admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     req = decide(db, admin, aid, True, body.reason)
-    doc = db.get(Document, req.doc_id)
+    kind_cn, label = _approval_target(db, req)
+    doc = db.get(Document, req.doc_id) if req.subject_type == "document" else None
     db.commit()
     write_log(db, user=admin, action="approval", target_id=req.doc_id,
-              target_label=doc.title if doc else "", decision="allow",
+              target_label=f"{kind_cn}：{label}", decision="allow",
               reason=(f"批准{approval_summary(req)}（申请人 {req.requester_name}）"),
               ip=client_ip(request))
     return {"id": req.id, "status": req.status,
+            "subject_type": req.subject_type,
             "doc_clearance": doc.clearance if doc else None}
 
 
@@ -221,13 +295,13 @@ def approve_req(aid: str, body: DecideIn, request: Request,
 def reject_req(aid: str, body: DecideIn, request: Request,
                admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     req = decide(db, admin, aid, False, body.reason)
-    doc = db.get(Document, req.doc_id)
+    kind_cn, label = _approval_target(db, req)
     db.commit()
     write_log(db, user=admin, action="approval", target_id=req.doc_id,
-              target_label=doc.title if doc else "", decision="deny",
+              target_label=f"{kind_cn}：{label}", decision="deny",
               reason=(f"驳回{approval_summary(req)}：{req.decided_reason}"),
               ip=client_ip(request))
-    return {"id": req.id, "status": req.status}
+    return {"id": req.id, "status": req.status, "subject_type": req.subject_type}
 
 
 @router.get("/report/daily")
@@ -357,8 +431,13 @@ def audit_anchor_status(user: User = Depends(current_user)):
             local = _json.loads(ANCHOR_FILE.read_text(encoding="utf-8"))
     except Exception:
         local = {}
-    external = anchors.read_external(limit=50)
+    external = anchors.read_external(limit=500)
     latest = external[-1] if external else {}
+    # P0-3：区分两类记录——锚点（链尾见证）与行副本（全量时间线），
+    # 运维据此判断"离线副本是否跟得上在线写入"。
+    anchor_recs = [r for r in external
+                   if r.get("kind", "audit_anchor") == "audit_anchor"]
+    row_recs = [r for r in external if r.get("kind") == "audit_rows"]
     return {
         "local": local,
         "external": {
@@ -366,7 +445,22 @@ def audit_anchor_status(user: User = Depends(current_user)):
             "file": bool(AUDIT_ANCHOR_EXTERNAL_FILE),
             "url": bool(AUDIT_ANCHOR_URL),
             "records": len(external),
-            "bad_signature": sum(1 for r in external if r.get("sig_ok") is False),
+            "anchor_records": len(anchor_recs),
+            "row_batches": len(row_recs),
+            # 最近 500 条外置记录内的行副本合计：与同期库内写入量比对即可发现
+            # "有行没送出去"（全量对账由 scripts/audit_archive.py 离线完成，
+            # 这里不读整份外置流，避免巡检接口被大文件拖慢）
+            "row_copies": sum(int(r.get("count") or 0) for r in row_recs),
+            # 只统计"指纹与当前密钥一致却验签不过"的记录：密钥轮换前的历史
+            # 记录（stale_key）单独计数，不能混进"疑似被伪造"——否则每次
+            # 轮换密钥都会让巡检显示一片红，运维会逐渐忽略这个告警。
+            "bad_signature": sum(1 for r in external
+                                 if r.get("sig_state") == "bad"),
+            "stale_key_records": sum(1 for r in external
+                                     if r.get("sig_state") == "stale_key"),
+            # 当前密钥指纹：运维要能一眼看出"这批记录是不是当前密钥签的"，
+            # 否则 stale_key 计数只能靠猜（换过密钥？还是被伪造？）。
+            "key_id": anchors.key_id(),
             "latest": latest,
         },
     }

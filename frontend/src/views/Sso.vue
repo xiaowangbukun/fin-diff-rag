@@ -21,6 +21,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auth } from '../api'
+import { setSession } from '../session'
 
 const router = useRouter()
 const text = ref('正在完成企业单点登录…')
@@ -31,8 +32,8 @@ function toLogin() { router.push('#/login') }
 onMounted(async () => {
   try {
     const res = await auth.ssoSession()
-    localStorage.setItem('finrag_token', res.token)
-    localStorage.setItem('finrag_user', JSON.stringify(res.user))
+    // cookie 模式下令牌由服务端直接种进 HttpOnly Cookie，这里不存任何令牌
+    setSession(res)
     router.push('/')
     location.reload()
   } catch (e) {

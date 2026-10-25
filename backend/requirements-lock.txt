@@ -66,3 +66,8 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2026.5
 uvicorn==0.54.0
+
+# ---- P0-6 迁移工具链（2026-10-25 追加，随 alembic 引入；未整体 re-freeze）----
+alembic==1.20.1
+mako==1.4.3
+markupsafe==3.0.4

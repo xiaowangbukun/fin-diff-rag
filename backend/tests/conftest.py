@@ -68,6 +68,14 @@ os.environ["PII_NER_URL"] = ""
 os.environ["JWT_SECRET"] = "pytest-fixed-jwt-secret-0123456789abcdef"
 os.environ["JWT_SECRET_OLD"] = ""
 os.environ["AUDIT_BATCH_TIMEOUT"] = "0.05"
+# 审计外置 sink 在测试里强制关闭（不是 setdefault，是覆盖）：
+# `backend/.env` 里若为演示打开了 AUDIT_ANCHOR_EXTERNAL_FILE，锚点比对会把
+# "外置序号 440 > 空库 0" 判成"尾行被截断"，resume_chain 于是同步写一条告警
+# 审计行——所有与"链尾序号"相关的用例都会被这条额外行带偏（曾真实发生：
+# 期望 4 行、实际 5 行）。外置 sink 的能力由 test_audit_anchors 里的
+# `anchor_file` fixture 用 monkeypatch 显式打开，这里必须保证默认是关的。
+os.environ["AUDIT_ANCHOR_EXTERNAL_FILE"] = ""
+os.environ["AUDIT_ANCHOR_URL"] = ""
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -243,6 +251,11 @@ def db(engine):
         except Exception:
             pass
         session.close()
+        # 先排空异步审计再删 schema：消费线程可能还握着一条待落库的行，
+        # 表被 CASCADE 掉之后它只能打印 "relation audit_logs does not exist"，
+        # 虽不影响用例结果，但会让每次跑测试的 stderr 都带一条假故障。
+        from app import audit
+        audit.flush_audit(timeout=2.0)
         _drop_schema(engine, schema)
 
 

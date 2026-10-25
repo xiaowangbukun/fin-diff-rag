@@ -66,6 +66,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auth } from '../api'
+import { setSession } from '../session'
 
 const router = useRouter()
 const route = useRoute()
@@ -109,8 +110,9 @@ onMounted(async () => {
 })
 
 function afterLogin(res) {
-  localStorage.setItem('finrag_token', res.token)
-  localStorage.setItem('finrag_user', JSON.stringify(res.user))
+  // Cookie 模式下 res.token 为空：会话只在 HttpOnly Cookie 里，localStorage
+  // 不落任何令牌（见 session.js 的两种模式说明）。
+  setSession(res)
   // 恢复码剩余告警要熬过整页刷新：存一次性 flash，由 App.vue 挂载时弹出
   if (res.recovery_warning) localStorage.setItem('finrag_flash', res.recovery_warning)
   router.push('/')

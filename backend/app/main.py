@@ -7,17 +7,23 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy.exc import InterfaceError, OperationalError
 
 from .audit import resume_chain, shutdown_audit
-from .config import ENFORCE_PASSWORD_CHANGE, require_database_url
+from .config import (
+    CORS_ALLOW_ORIGINS, DISABLE_DOCS, ENFORCE_PASSWORD_CHANGE, TRUSTED_HOSTS,
+    require_database_url,
+)
 from .db import SessionLocal, init_db
 from .embed import check_dimension_consistency, require_embedding_key
 from .errors import (
     ServiceUnavailable, internal_error_handler, service_unavailable_handler,
+)
+from .httpguard import (
+    CORSGuardMiddleware, HTTPSRedirectMiddleware, SecurityHeadersMiddleware,
 )
 from .migrate import ensure_schema
 from .routers import admin, auth, chat, docs
@@ -26,6 +32,12 @@ from .vindex import ensure_vector_index
 
 DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
+
+def _cors_origins() -> list[str]:
+    """CORS 白名单（逗号分隔）。空 = 不启用跨域，只允许同源。"""
+    return [o.strip() for o in CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # #21：DATABASE_URL 必填校验与方案 B（无 EMBED_API_KEY 拒绝启动）同为
@@ -33,6 +45,11 @@ async def lifespan(app: FastAPI):
     # （建表/种子都是副作用）。
     require_database_url()
     require_embedding_key()
+    # P0-5/P0-6：密钥来源与数据库链路加密同为"配置类失败"，必须在建表之前拒绝。
+    from .config import require_db_tls
+    from .secrets_provider import require_provider as require_secret_provider
+    require_secret_provider(("DATABASE_URL", "JWT_SECRET"))
+    require_db_tls()
     # S3 配置类失败同样前置拒绝：开了 OIDC 却没 issuer/client_id 时，
     # 登录页会挂一个永远 503 的按钮——宁可起不来，也别带病对外。
     from .oidc import require_config as require_oidc_config
@@ -60,6 +77,13 @@ async def lifespan(app: FastAPI):
                 f"拒绝启动：{', '.join(_stale)} 仍在使用出厂口令，且 "
                 "ENFORCE_PASSWORD_CHANGE=true。请先在管理端改密后再启动。"
             )
+    # P0-3：外置 sink 的签名密钥若没显式配置，会在 JWT 轮换/随机化后让历史
+    # 记录全部验签失败。不阻断启动（否则演示环境起不来），但必须说出来——
+    # 沉默的密钥耦合最终会被运维误读成"有人伪造锚点"。
+    from .anchors import startup_warning as _anchor_warning
+    _warn = _anchor_warning()
+    if _warn:
+        print(_warn, file=sys.stderr)
     # P1-6：保障 PG 侧向量索引存在
     _db = SessionLocal()
     try:
@@ -78,15 +102,25 @@ app = FastAPI(
     description="全链路权限防泄密的检索增强问答系统",
     version="1.0.0",
     lifespan=lifespan,
+    # 关掉默认 /docs 与 /redoc 之外的隐式交互文档面？保持开启便于内网联调，
+    # 但生产可用 DISABLE_DOCS=true 关掉（见 config）。
+    docs_url=None if DISABLE_DOCS else "/docs",
+    redoc_url=None if DISABLE_DOCS else "/redoc",
+    openapi_url=None if DISABLE_DOCS else "/openapi.json",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ---------- 部署边界（P0-2）----------
+# 中间件顺序（后加者在外层）：SecurityHeaders 最外 → 任何错误响应也带安全头；
+# CORS 在其次（预检拒绝也要带安全头）；HTTPSRedirect 最内（跳转响应同样带头）。
+# Host 白名单必须最先加：它若排在 SecurityHeaders 之后就是最外层，被拒的
+# 400 响应会绕过安全头与 CORS 处理——恰恰是最需要最小信息量的错误分支。
+if TRUSTED_HOSTS:
+    app.add_middleware(TrustedHostMiddleware,
+                       allowed_hosts=[h.strip() for h in TRUSTED_HOSTS.split(",") if h.strip()])
+app.add_middleware(HTTPSRedirectMiddleware)
+app.add_middleware(CORSGuardMiddleware, origins=_cors_origins())
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 # ---------- 全局异常语义（A4：HTTP 错误语义） ----------
 # 503：下游不可用（数据库连接失败 / embedding 超时 / LLM 超时）统一映射，

@@ -110,12 +110,19 @@ def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
     响应体统一成 JSON，与 4xx/503 的错误形状一致，前端可按同一套逻辑解析。
     堆栈在本处理器里显式记录一份：ASGI server（uvicorn）也会记一份，
     双保险——日志配置变化时"未捕获异常有完整堆栈"这件事依然成立。
+
+    安全头（P0-2）：本处理器由 Starlette 的 ServerErrorMiddleware 调用，
+    位于**所有 user middleware 之外**，所以 500 响应不会经过
+    SecurityHeadersMiddleware——这里显式补一次，避免最该防泄露的响应裸奔。
     """
     logger.error(
         "未捕获异常：%s %s\n%s",
         request.method, request.url.path,
         "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
     )
-    return JSONResponse(
+    response = JSONResponse(
         {"detail": "服务器内部错误，请联系管理员"}, status_code=500
     )
+    from .httpguard import apply_security_headers
+    apply_security_headers(request, response)
+    return response

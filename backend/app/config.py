@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from . import secrets_provider
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 
@@ -33,12 +35,23 @@ def _env(k: str, default: str = "") -> str:
     return os.getenv(k, default).strip()
 
 
+def _secret(name: str, default: str = "") -> str:
+    """高危密钥取值：托管源（密封文件 / KMS 网关）优先，未配置时才用环境变量。
+
+    P0-5：密钥不落应用主机配置文件的落地方式。托管源一旦启用就不再回落
+    .env——"以为在托管、实际在用明文"是比不托管更危险的状态（合规检查会
+    认为已托管，事故却出在明文上）。见 app/secrets_provider.py。
+    """
+    return secrets_provider.resolve(name, default)
+
+
+
 # ---------- 数据库 ----------
 # #21：SQLite 降级链路已移除，PostgreSQL + pgvector 是唯一存储后端。
 # DATABASE_URL 必填；缺失或非 postgres 开头由 require_database_url() 在
 # 启动期拒绝。刻意不做导入期校验：import app.main 不该因缺配置而失败
 # （CI 的 import 冒烟步骤依赖这一点）。
-DATABASE_URL = _env("DATABASE_URL", "")
+DATABASE_URL = _secret("DATABASE_URL", _env("DATABASE_URL", ""))
 
 
 def require_database_url() -> None:
@@ -61,13 +74,36 @@ def require_database_url() -> None:
             "postgresql+psycopg:// 开头的连接串。"
         )
 
+
+def require_db_tls() -> None:
+    """启动期校验：REQUIRE_DB_TLS=true 时连接串必须显式启用 TLS。
+
+    为什么要显式：数据库链路承载的是全库密级内容 + 审计证据，明文在内网
+    横向移动场景下等于把"谁看了什么绝密"整包送人。sslmode=prefer（libpq
+    默认）会**静默降级**成明文——必须 require / verify-ca / verify-full 才算数。
+    verify-ca/verify-full 还要求根证书在位（`sslrootcert=`），因此这里只校验
+    模式，不校验证书文件是否存在（证书路径属部署环境）。
+    """
+    if not REQUIRE_DB_TLS:
+        return
+    from urllib.parse import parse_qs, urlsplit
+
+    query = parse_qs(urlsplit(DATABASE_URL).query)
+    mode = (query.get("sslmode") or [""])[0].strip().lower()
+    if mode not in ("require", "verify-ca", "verify-full"):
+        raise RuntimeError(
+            "拒绝启动：REQUIRE_DB_TLS=true 但 DATABASE_URL 未启用强制 TLS。"
+            "请在连接串追加 ?sslmode=verify-full（或 require / verify-ca），"
+            f"当前为 {mode or '未设置'}。sslmode=prefer 会静默降级为明文，不算数。"
+        )
+
 # ---------- 大模型 / Embedding（OpenAI 兼容协议）----------
 LLM_BASE_URL = _env("LLM_BASE_URL", "https://api.deepseek.com/v1")
-LLM_API_KEY = _env("LLM_API_KEY", "")
+LLM_API_KEY = _secret("LLM_API_KEY", _env("LLM_API_KEY", ""))
 LLM_MODEL = _env("LLM_MODEL", "deepseek-chat")
 
 EMBED_BASE_URL = _env("EMBED_BASE_URL", LLM_BASE_URL)
-EMBED_API_KEY = _env("EMBED_API_KEY", LLM_API_KEY)
+EMBED_API_KEY = _secret("EMBED_API_KEY", _env("EMBED_API_KEY", LLM_API_KEY))
 EMBED_MODEL = _env("EMBED_MODEL", "text-embedding-3-small")
 EMBED_DIM = int(_env("EMBED_DIM", "1024"))          # pgvector 列维度，改值需重建表
 # true = 未配置 EMBED_API_KEY 时拒绝启动（方案 B，现为唯一路径：#21 已移除
@@ -83,9 +119,9 @@ HTTP_TIMEOUT = int(_env("HTTP_TIMEOUT", "60"))
 # JWT_SECRET 为空时启动生成进程级随机密钥（重启失效，开发无感；忘配固定密钥
 # 的最坏结果是重启后需重新登录，而不是被固定默认密钥伪造身份）。
 # 生产必须显式注入固定密钥，多 worker 部署尤其如此。
-JWT_SECRET = _env("JWT_SECRET", "")
+JWT_SECRET = _secret("JWT_SECRET", _env("JWT_SECRET", ""))
 # 轮换过渡密钥：只参与验证、不用于签发。换密钥时先配 OLD 再换新，实现无缝轮换。
-JWT_SECRET_OLD = _env("JWT_SECRET_OLD", "")
+JWT_SECRET_OLD = _secret("JWT_SECRET_OLD", _env("JWT_SECRET_OLD", ""))
 # true = 未配置 JWT_SECRET 时拒绝启动（生产建议开启）
 ENFORCE_JWT_SECRET = _env("ENFORCE_JWT_SECRET", "false").lower() in ("1", "true", "yes", "on")
 # 出厂口令闸门：seed 注入的 admin/业务角色口令（Admin@123 / User@123）若未改，
@@ -128,7 +164,7 @@ TOTP_WINDOW_STEPS = int(_env("TOTP_WINDOW_STEPS", "1"))
 # TOTP 密钥静态加密用的 Fernet key（64 字符 urlsafe base64）。留空则从
 # JWT_SECRET 派生（同一密钥库，轮换 JWT 密钥需先确认已无人依赖派生密钥）。
 # 两者都没配时拒绝绑定（宁可 503 也不明文存第二因子）。
-MFA_SECRET_KEY = _env("MFA_SECRET_KEY", "")
+MFA_SECRET_KEY = _secret("MFA_SECRET_KEY", _env("MFA_SECRET_KEY", ""))
 
 # 恢复码（一次性备用码）：手机丢失/换机且来不及找管理员时的自助出口。
 # 为什么不用 6 位数字：恢复码等价于第二因子本身，必须是高熵随机串
@@ -143,7 +179,7 @@ RECOVERY_CODE_ENABLED = _env("RECOVERY_CODE_ENABLED", "true").lower() in (
 OIDC_ENABLED = _env("OIDC_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 OIDC_ISSUER = _env("OIDC_ISSUER", "").rstrip("/")
 OIDC_CLIENT_ID = _env("OIDC_CLIENT_ID", "")
-OIDC_CLIENT_SECRET = _env("OIDC_CLIENT_SECRET", "")
+OIDC_CLIENT_SECRET = _secret("OIDC_CLIENT_SECRET", _env("OIDC_CLIENT_SECRET", ""))
 # 回调地址必须与 IdP 侧登记一致；留空则按请求的 base_url 推导
 # （/api/auth/oidc/callback），仅适合单域名部署。
 OIDC_REDIRECT_URI = _env("OIDC_REDIRECT_URI", "")
@@ -195,6 +231,73 @@ LOGIN_THROTTLE_BACKEND = _env("LOGIN_THROTTLE_BACKEND", "auto").lower()
 LOGIN_MAX_FAILS = int(_env("LOGIN_MAX_FAILS", "5"))              # 窗口内失败次数上限
 LOGIN_WINDOW_MINUTES = int(_env("LOGIN_WINDOW_MINUTES", "5"))    # 计数滚动窗口
 LOGIN_LOCK_MINUTES = int(_env("LOGIN_LOCK_MINUTES", "15"))       # 触发后的锁定时长
+
+# ---------- 部署边界：TLS / 浏览器安全头 / CORS（P0-2）----------
+# 金融机构的部署形态通常是"TLS 终止在反代（Nginx/F5/网关），应用只监听内网
+# 明文口"。因此这里既要能信任反代传来的协议头，也要能在灰度/直连时强制跳
+# HTTPS——两种形态都能收口，而不是把安全责任全推给运维"记得配"。
+TRUST_PROXY_HEADERS = _env("TRUST_PROXY_HEADERS", "true").lower() in (
+    "1", "true", "yes", "on")
+FORCE_HTTPS = _env("FORCE_HTTPS", "false").lower() in ("1", "true", "yes", "on")
+HSTS_SECONDS = int(_env("HSTS_SECONDS", "31536000"))   # 0 = 不发 HSTS（内网纯 HTTP 时）
+SECURITY_HEADERS = _env("SECURITY_HEADERS", "true").lower() in ("1", "true", "yes", "on")
+# CSP 按"前端由本服务同源托管"来写：脚本/样式/接口全部 self，禁 object/框架嵌套。
+# Element Plus 有运行时内联样式，style-src 必须留 'unsafe-inline'（不影响脚本执行）。
+CSP_POLICY = _env("CSP_POLICY", (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+))
+# 跨域白名单：默认空 = 不装 CORS 中间件（只允许同源）。确需前后端分离部署时
+# 显式列出来源（逗号分隔），不要用 *——带 Cookie 的跨域在规范上也不允许 * 配凭证。
+CORS_ALLOW_ORIGINS = _env("CORS_ALLOW_ORIGINS", "")
+# Host 头白名单（防 DNS rebinding / 反代配错暴露到公网）。留空 = 不校验。
+TRUSTED_HOSTS = _env("TRUSTED_HOSTS", "")
+# true = 关闭 /docs、/redoc、/openapi.json（生产建议开：接口文档面本身是侦察面）
+DISABLE_DOCS = _env("DISABLE_DOCS", "false").lower() in ("1", "true", "yes", "on")
+
+# ---------- 会话：空闲超时 + 单端吊销（P0-4）----------
+# 12 小时固定过期对办公场景太宽：离开工位一下午再回来仍可读绝密。这里加
+# 服务端会话表，按"最后一次使用"计空闲超时；0 = 关闭（仅测试/离线诊断）。
+SESSION_IDLE_MINUTES = int(_env("SESSION_IDLE_MINUTES", "30"))
+# 每次请求都写一次 last_seen 会把审计库打热，因此节流：最多每 N 秒回写一次。
+SESSION_TOUCH_SECONDS = int(_env("SESSION_TOUCH_SECONDS", "60"))
+# Cookie 会话模式：令牌不进 localStorage（XSS 也拿不到），改由 HttpOnly
+# Cookie 承载 + 双提交 CSRF 校验。默认关，保持"Bearer 令牌"的兼容路径；
+# 生产建议开（前端已适配）。开启后登录响应不再回传 token。
+AUTH_COOKIE_MODE = _env("AUTH_COOKIE_MODE", "false").lower() in (
+    "1", "true", "yes", "on")
+AUTH_COOKIE_NAME = _env("AUTH_COOKIE_NAME", "finrag_session")
+CSRF_COOKIE_NAME = _env("CSRF_COOKIE_NAME", "finrag_csrf")
+# Cookie 的 Secure 属性：auto = 按请求实际协议（HTTPS 才设），true/false 强制。
+AUTH_COOKIE_SECURE = _env("AUTH_COOKIE_SECURE", "auto").lower()
+
+# ---------- 密钥托管（P0-5）----------
+# 高危密钥（DATABASE_URL / JWT_SECRET / MFA_SECRET_KEY / AUDIT_ANCHOR_HMAC_KEY /
+# OIDC_CLIENT_SECRET / LLM_API_KEY / EMBED_API_KEY）从密封文件或 KMS 网关读取，
+# 不落应用主机配置文件。托管源一旦启用就不再回落 .env（避免"以为在托管、
+# 实际在用明文"）。见 app/secrets_provider.py。
+SECRETS_PROVIDER = _env("SECRETS_PROVIDER", "auto").lower()
+SECRETS_DIR = _env("SECRETS_DIR", "")
+SECRETS_URL = _env("SECRETS_URL", "")
+SECRETS_TOKEN = _secret("SECRETS_TOKEN", _env("SECRETS_TOKEN", ""))
+SECRETS_TTL = int(_env("SECRETS_TTL", "300"))
+# true = 启动期强制要求密钥确实来自托管源（生产建议开）
+REQUIRE_SECRETS_PROVIDER = _env("REQUIRE_SECRETS_PROVIDER", "false").lower() in (
+    "1", "true", "yes", "on")
+# true = DATABASE_URL 必须显式带 TLS（sslmode=require/verify-ca/verify-full）
+REQUIRE_DB_TLS = _env("REQUIRE_DB_TLS", "false").lower() in (
+    "1", "true", "yes", "on")
+
+# ---------- 审计：只追加 + 全量外送（P0-3）----------
+# 只追加：数据库触发器拒绝 UPDATE/DELETE（需要改审计行做攻击演练时，会话内
+# 显式 SET LOCAL finrag.audit_append_only='off' 破窗，应用代码永不这样设）。
+AUDIT_APPEND_ONLY = _env("AUDIT_APPEND_ONLY", "true").lower() in (
+    "1", "true", "yes", "on")
+# 全量外送：把每批新增审计行（序号+行哈希+摘要）随锚点一起发到外置 sink，
+# 而不是只发链尾。这样离线副本可独立重建审计时间线，而不只是"校验尾哈希"。
+AUDIT_SHIP_ROWS = _env("AUDIT_SHIP_ROWS", "true").lower() in (
+    "1", "true", "yes", "on")
 
 # ---------- 检索 ----------
 TOP_K = int(_env("TOP_K", "8"))
@@ -318,7 +421,7 @@ AUDIT_BATCH_TIMEOUT = float(_env("AUDIT_BATCH_TIMEOUT", "0.2"))
 # 每条记录带 HMAC-SHA256 签名，密钥留空则由 JWT_SECRET 派生。
 AUDIT_ANCHOR_EXTERNAL_FILE = _env("AUDIT_ANCHOR_EXTERNAL_FILE", "")
 AUDIT_ANCHOR_URL = _env("AUDIT_ANCHOR_URL", "")
-AUDIT_ANCHOR_HMAC_KEY = _env("AUDIT_ANCHOR_HMAC_KEY", "")
+AUDIT_ANCHOR_HMAC_KEY = _secret("AUDIT_ANCHOR_HMAC_KEY", _env("AUDIT_ANCHOR_HMAC_KEY", ""))
 AUDIT_ANCHOR_INTERVAL_SECONDS = float(_env("AUDIT_ANCHOR_INTERVAL_SECONDS", "60"))
 AUDIT_ANCHOR_TIMEOUT = float(_env("AUDIT_ANCHOR_TIMEOUT", "5"))
 
