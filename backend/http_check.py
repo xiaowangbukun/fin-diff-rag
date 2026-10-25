@@ -302,6 +302,29 @@ check("审批队列可查且区分账号/文档（subject_type）",
 check("非管理员看不到审计锚点状态",
       c.get("/api/admin/audit/anchor", headers=auth(login("intern01"))).status_code == 403)
 
+# ---- 安全姿态自检（启动日志同一份清单，经控制台可查）----
+post = c.get("/api/admin/security-posture", headers=auth(tk)).json()
+post_levels = {f.get("key"): f.get("level") for f in post.get("findings", [])}
+check("安全姿态清单可查且覆盖决定性防线",
+      all(post_levels.get(k) == "OK" for k in (
+          "SECURITY_HEADERS", "JIGSAW_ENABLED", "INTENT_ENABLED",
+          "FAIL_SECURE_ENABLED", "AUDIT_APPEND_ONLY")),
+      f"{len(post_levels)} 项")
+check("姿态计数与清单条数一致",
+      sum(post.get("counts", {}).values()) == len(post.get("findings", []))
+      and post.get("counts", {}).get("FAIL", 1) == 0,
+      f"counts={post.get('counts')}")
+check("production_ready 与 WARN/FAIL 计数口径一致",
+      post.get("production_ready") is (post.get("counts", {}).get("WARN") == 0
+                                       and post.get("counts", {}).get("FAIL") == 0),
+      f"ready={post.get('production_ready')} counts={post.get('counts')}")
+check("每条 WARN/FAIL 都带整改建议（否则运维无从下手）",
+      all(f.get("fix") for f in post.get("findings", [])
+          if f.get("level") in ("WARN", "FAIL")))
+check("非管理员看不到安全姿态",
+      c.get("/api/admin/security-posture",
+            headers=auth(login("intern01"))).status_code == 403)
+
 
 print("\n" + "=" * 46)
 print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")

@@ -21,7 +21,7 @@ from ..pii import scan
 from ..policy import accessible_doc_ids, can_access, effective_clearance
 from ..schemas import AclIn, DocCreateIn, DocUpdateIn
 from ..security import current_user
-from ..serializers import dept_name, doc_out, level_options
+from ..serializers import doc_out, level_options
 from .auth import client_ip
 
 router = APIRouter(prefix="/docs", tags=["知识库"])

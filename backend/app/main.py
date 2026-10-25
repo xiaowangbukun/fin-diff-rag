@@ -54,6 +54,11 @@ async def lifespan(app: FastAPI):
     # 登录页会挂一个永远 503 的按钮——宁可起不来，也别带病对外。
     from .oidc import require_config as require_oidc_config
     require_oidc_config()
+    # 生产就绪自检：把"当前进程实际生效的安全开关"打成人能读的清单。
+    # 放在建表之前（纯读配置，不建连），且早于 ensure_seed——配置类问题不该
+    # 先留下半个库。STRICT_SECURITY_POSTURE=true 时未清零即拒绝启动。
+    from .security_posture import evaluate_and_report as _posture
+    _posture()
     init_db()
     ensure_schema()  # 增量补列（哈希链字段等），旧库升级无 Alembic 也能平滑落地
     resume_chain(SessionLocal())  # 审计链尾 hash 从库恢复，重启后链继续

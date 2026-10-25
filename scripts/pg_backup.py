@@ -32,7 +32,6 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 

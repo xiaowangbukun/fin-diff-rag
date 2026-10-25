@@ -158,7 +158,7 @@ fin-rag/
 │   │   └── routers/            auth / docs / chat / admin
 │   ├── alembic.ini             结构迁移配置（注释必须 ASCII：alembic 按 locale 读 ini）
 │   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）
-│   ├── tests/                  pytest 单测体系（844 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
+│   ├── tests/                  pytest 单测体系（865 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
 │   ├── smoke.py                端到端冒烟
 │   ├── http_check.py           真实服务 HTTP 验证（Bearer 模式基线）
 │   ├── cookie_mode_check.py    真实服务 HTTP 验证（Cookie + CSRF 模式）
@@ -299,6 +299,26 @@ npm run build    # 产出 dist/，后端会自动托管，直接访问 8000 即�
 11. **升级与灾备（P0-6）**：发布顺序固定为"备份 → `alembic upgrade head` → 前端构建 → 启服务"，详见 [`docs/BACKUP-RESTORE.md`](docs/BACKUP-RESTORE.md)；上线前必须完成**一次**恢复演练（`scripts/pg_backup.py restore` 到独立库并跑 `smoke.py`）并留记录。
 12. **巡检手段**：`GET /api/health` 的 `jwt_secret` 字段为 `configured` / `ephemeral`——脚本可断言其不为 `ephemeral`；`embed_mode` 应为 `api` 而非 `local`。
 13. **第三方许可**：`THIRD-PARTY-NOTICES.md`（仓库根，`python scripts/generate_third_party_notices.py` 生成）——升级任何依赖后必须重跑；已知传染性许可 certifi（MPL-2.0）/ psycopg（LGPL-3.0）均与 AGPL-3.0 兼容（MPL-2.0 §3.3 明列 AGPL 为次级许可；LGPL-3.0 可升级为 GPL-3.0，再由 GPL-3.0 §13 与 AGPL 组合），随分发提供许可文本即可，不需要为此开源本项目。本轮新增 alembic（MIT，含 Mako/MarkupSafe 依赖），生成脚本会一并覆盖。
+14. **安全姿态自检（把上面的清单变成"不看日志就会漏"的反面）**：服务启动时会打印 `[SECURITY-POSTURE] 启动安全姿态自检`，逐条给出当前进程**实际生效**的开关（OK / INFO / WARN / FAIL，每条 WARN/FAIL 都带整改建议）；管理员也可在控制台调 `GET /api/admin/security-posture` 拿到同一份清单（含 `production_ready` 与四条计数）。两种用法：
+    - **人工上线检查**：启动日志里 `WARN`/`FAIL` 清零即为生产口径（`production_ready=true`）；
+    - **强制闸门**：置 `STRICT_SECURITY_POSTURE=true`，任何 WARN/FAIL 直接**拒绝启动**——把"上线前记得看一眼"变成"没配好就起不来"。演示/联调环境保持默认 false，否则起不来（测试与本地跑批都依赖宽松默认值）。
+    当前默认配置下的典型 WARN 与对应生产取值：
+
+    | WARN 项 | 现状（默认） | 生产取值 |
+    |---|---|---|
+    | `METRICS_ENABLED` | false —— 拦截率/拼图风险/爆破无人喊 | `true`，并配 `ALERT_WEBHOOK_URL` |
+    | `MFA_ENFORCE_ADMIN` | false —— admin 可见绝密却可单因子登录 | `true`（高敏场景再评估 `MFA_ENFORCE_ALL`） |
+    | `AUTH_COOKIE_MODE` | false —— 令牌在 localStorage，XSS 可窃 | `true`（前端已适配，需 HTTPS + 同源） |
+    | `TRUSTED_HOSTS` | 空 —— 任意 Host 头都接受 | 实际访问域名，如 `rag.example.com` |
+    | `DISABLE_DOCS` | false —— OpenAPI 是侦察面 | `true` |
+    | `HTTPS`（`FORCE_HTTPS`+`HSTS_SECONDS`） | 未同时开启 | `FORCE_HTTPS=true` 且 `HSTS_SECONDS>=31536000` |
+    | `AUDIT_ANCHOR_EXTERNAL` | 未配置（仅本地锚点） | `AUDIT_ANCHOR_EXTERNAL_FILE` 或 `AUDIT_ANCHOR_URL` |
+    | `SECRETS_PROVIDER` | none —— 高危密钥在 `.env` 明文 | `file`+`SECRETS_DIR`（或 `http`+`SECRETS_URL`），并 `REQUIRE_SECRETS_PROVIDER=true` |
+    | `TRUST_PROXY_HEADERS` | 需按部署形态二选一 | 反代终止 TLS：`true` + uvicorn `FORWARDED_ALLOW_IPS`；源站可直连：`false` |
+    | `OIDC_CLAIM_SYNC_UNKNOWN` | ignore（开启 claim 同步时） | `reject`：IdP 侧未登记的取值直接拒绝登录 |
+
+    `FAIL` 项（关掉即等于删掉一条防线，必须清零）：`SECURITY_HEADERS`、`JIGSAW_ENABLED`、`INTENT_ENABLED`、`FAIL_SECURE_ENABLED`、`AUDIT_APPEND_ONLY`、`JWT_SECRET`。
+
 
 ## 三之三、离线安装（内网无外网环境）
 
@@ -364,7 +384,7 @@ pip install --no-index --find-links=wheels/ -r requirements-lock.txt
 ```bash
 cd backend
 python smoke.py            # 262 项断言，报告落在 backend/.smoke_report.txt
-python run_httpcheck.py    # 对真实运行中的服务做 41 项 HTTP 断言（Bearer 模式，需先启动服务）
+python run_httpcheck.py    # 对真实运行中的服务做 46 项 HTTP 断言（Bearer 模式，需先启动服务）
 # Cookie 会话模式（AUTH_COOKIE_MODE=true 启动）：令牌只走 HttpOnly Cookie + CSRF 双提交
 python cookie_mode_check.py   # 14 项断言（HttpOnly / SameSite / CSRF 缺失与错值均 403 / 登出清 Cookie）
 ```
@@ -401,7 +421,7 @@ python killport.py
 
 `.github/workflows/ci.yml` 在每次 push / PR 上跑两道闸，**不需要任何自建 runner 或外部服务**：
 
-- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（842 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
+- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（865 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
 - **frontend**：Node 20，`npm ci || npm install` 后 `vite build`，产物作为 artifact 保留 7 天。
 - 同一分支新推送会取消旧运行（`concurrency`）；测试只需 PostgreSQL，所以**自建 Gitea/GitLab CI 也照这个顺序抄**：起 PG 16 + pgvector → 建扩展 → 装 `requirements.txt` → `pytest` → `npm run build`。
 
@@ -409,7 +429,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 `http_check.py` 自带夹具重置（清空拼图账本 + 删除历次遗留的同名测试样本集），因此**可反复执行且结果稳定**——持久库上重复跑不会因累积的限流状态或重复样本稀释覆盖率而误报。
 
-`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **842/842**、smoke **262/262**、HTTP 端到端 **41/41**（真实向量服务；离线 fake 向量下 40/41，仅"绝密附注语义召回"一条依赖向量质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。
+`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **865/865**、smoke **262/262**、HTTP 端到端 **46/46**（真实向量服务；离线 fake 向量下仅"绝密附注语义召回"一条依赖向量质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。第五轮复核专项：**安全姿态自检（启动打印实际生效姿态 + `STRICT_SECURITY_POSTURE=true` 未清零即拒绝启动 + `GET /api/admin/security-posture` 只读接口）、审计链失败批次可续链/消费线程存活**。
 
 ---
 

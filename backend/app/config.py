@@ -288,6 +288,11 @@ REQUIRE_SECRETS_PROVIDER = _env("REQUIRE_SECRETS_PROVIDER", "false").lower() in 
 # true = DATABASE_URL 必须显式带 TLS（sslmode=require/verify-ca/verify-full）
 REQUIRE_DB_TLS = _env("REQUIRE_DB_TLS", "false").lower() in (
     "1", "true", "yes", "on")
+# 启动安全姿态自检的严格模式：true = 任何 WARN/FAIL 都拒绝启动（见
+# app/security_posture.py）。默认关闭，演示与自动化测试照常启动；生产建议开启，
+# 把"上线前记得看日志"变成"没配好就起不来"。
+STRICT_SECURITY_POSTURE = _env("STRICT_SECURITY_POSTURE", "false").lower() in (
+    "1", "true", "yes", "on")
 
 # ---------- 审计：只追加 + 全量外送（P0-3）----------
 # 只追加：数据库触发器拒绝 UPDATE/DELETE（需要改审计行做攻击演练时，会话内

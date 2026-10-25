@@ -432,7 +432,6 @@ def flush_audit(timeout: float = 5.0) -> bool:
 
 def shutdown_audit(timeout: float = 5.0) -> None:
     """停止消费线程并把剩余审计行全部落库（FastAPI lifespan 收尾调用）。"""
-    global _consumer_thread
     t = _consumer_thread
     if t is None or not t.is_alive():
         return

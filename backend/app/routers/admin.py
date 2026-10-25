@@ -486,6 +486,22 @@ def audit_anchor_flush(request: Request, admin: User = Depends(require_admin),
     return record
 
 
+@router.get("/security-posture")
+def security_posture(admin: User = Depends(require_admin)):
+    """当前进程实际生效的安全姿态（只读，不写审计以免污染链）。
+
+    与启动日志同源（app/security_posture.py）：运维在控制台即可回答
+    "这套部署到底开了哪些防线、还有哪几条没开"，不必去翻容器日志。
+    """
+    from ..security_posture import assess, summarize
+
+    findings = assess()
+    return {
+        "findings": [f.as_dict() for f in findings],
+        **summarize(findings),
+    }
+
+
 @router.get("/audit/verify")
 def verify_audit_chain(limit: int = 5000, user: User = Depends(current_user),
                        db: Session = Depends(get_db)):

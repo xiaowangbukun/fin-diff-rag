@@ -23,7 +23,7 @@ from ..schemas import (
     TotpDisableIn, TotpSetupIn,
 )
 from ..security import (
-    active_sessions, check_session, clear_session_cookies, create_mfa_challenge,
+    active_sessions, clear_session_cookies, create_mfa_challenge,
     create_token, current_user, decode_purpose, hash_password, needs_rehash,
     open_session, revoke_session, revoke_user_sessions, set_session_cookies,
     verify_password,

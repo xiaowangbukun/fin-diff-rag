@@ -2,7 +2,6 @@
 """文档接入：解析 → 语义切片 → 敏感信息统计 → 向量化 → 落库。"""
 import hashlib
 import re
-from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import delete as sa_delete, select

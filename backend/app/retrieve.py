@@ -15,13 +15,13 @@
 import re
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from .config import CANDIDATE_POOL, HNSW_EF_SEARCH, LEVEL_NAMES
 from .embed import embedder
 from .models import Chunk, Document, User
-from .policy import accessible_doc_ids, can_access, chunk_clearance_cond, effective_clearance
+from .policy import accessible_doc_ids, can_access, effective_clearance
 
 STOP = set("的了和与在是对为有个我们你他它们这那吗呢吧啊请帮我查询一下什么是如何怎么样哪些".strip())
 MIN_SCORE = 0.28          # 向量相似度准入线
