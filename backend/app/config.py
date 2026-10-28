@@ -322,6 +322,31 @@ MAX_UPLOAD_MB = int(_env("MAX_UPLOAD_MB", "20"))        # 单上传文件字节�
 MAX_DOC_CHARS = int(_env("MAX_DOC_CHARS", "500000"))    # 单文档正文字符上限
 MAX_QUERY_CHARS = int(_env("MAX_QUERY_CHARS", "1000"))  # 单轮问答 query 字符上限
 
+# ---------- 原件留存（MinIO / S3 兼容；默认关闭）----------
+# 默认关闭 = 现状：上传原文解析完即删，库内只有切片文本（隐私最小化的默认）。
+# 开启后原始字节写入对象存储，供人工审查"当时到底提交了什么"；代价是对象
+# 存储里多一份与切片同等级的敏感数据，必须一并纳入备份/权限/审计范围。
+# 注意：自建 S3 的删除是"逻辑删除 + 后台清扫"，**不等于 WORM**；要不可篡改的
+# 合规留存需另开对象锁（Object Lock）与版本化，本开关不承诺这一点。
+ORIGINAL_STORE_ENABLED = _env("ORIGINAL_STORE_ENABLED", "false").lower() in (
+    "1", "true", "yes", "on")
+ORIGINAL_STORE_ENDPOINT = _env("ORIGINAL_STORE_ENDPOINT", "")   # 例：127.0.0.1:9000
+ORIGINAL_STORE_BUCKET = _env("ORIGINAL_STORE_BUCKET", "finrag-originals")
+ORIGINAL_STORE_PREFIX = _env("ORIGINAL_STORE_PREFIX", "originals").strip("/")
+ORIGINAL_STORE_REGION = _env("ORIGINAL_STORE_REGION", "us-east-1")
+ORIGINAL_STORE_SECURE = _env("ORIGINAL_STORE_SECURE", "false").lower() in (
+    "1", "true", "yes", "on")   # true = HTTPS（内网 MinIO 常见为 false）
+ORIGINAL_STORE_ACCESS_KEY = _secret(
+    "ORIGINAL_STORE_ACCESS_KEY", _env("ORIGINAL_STORE_ACCESS_KEY", ""))
+ORIGINAL_STORE_SECRET_KEY = _secret(
+    "ORIGINAL_STORE_SECRET_KEY", _env("ORIGINAL_STORE_SECRET_KEY", ""))
+# 严格模式：原件写不进去就拒绝入库（默认宽容——对象存储抖动不该让知识库停摆，
+# 但失败必须留审计 flag，且文档标记 original.stored=false，审查端不会误以为有原件）。
+ORIGINAL_STORE_STRICT = _env("ORIGINAL_STORE_STRICT", "false").lower() in (
+    "1", "true", "yes", "on")
+# 审查端单次取回体积上限：防止超大对象把进程内存打满（超过即拒绝并留痕）。
+ORIGINAL_STORE_GET_MAX_MB = int(_env("ORIGINAL_STORE_GET_MAX_MB", "32"))
+
 # ---------- 切片 ----------
 CHUNK_SIZE = int(_env("CHUNK_SIZE", "520"))
 CHUNK_OVERLAP = int(_env("CHUNK_OVERLAP", "80"))

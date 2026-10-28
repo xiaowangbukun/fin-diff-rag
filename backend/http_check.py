@@ -232,6 +232,18 @@ check("统计含合谋检出计数", isinstance(st.get("jigsaw_coalition"), int)
       f"jigsaw_coalition={st.get('jigsaw_coalition')}")
 check("统计含意图阻断/降级口径", "blocked_7d" in st, f"blocked_7d={st.get('blocked_7d')}")
 
+# ---- 原件留存审查接口（开关默认关闭；这里只校验契约与权限边界）----
+om = c.get(f"/api/admin/documents/{doc['id']}/original/meta", headers=auth(tk))
+check("原件台账接口可用（管理员，只读）",
+      om.status_code == 200 and "items" in om.json(),
+      f"status={om.status_code} enabled={om.json().get('enabled') if om.status_code == 200 else '-'}")
+check("原件审查仅管理员可见（普通用户 403）",
+      c.get(f"/api/admin/documents/{doc['id']}/original/meta",
+            headers=auth(tk_plain)).status_code == 403)
+od = c.get(f"/api/admin/documents/{doc['id']}/original", headers=auth(tk))
+check("原件下载契约稳定（未开启 409 / 已留存 200）", od.status_code in (200, 409),
+      f"status={od.status_code}")
+
 logs = audit_wait({"decision": "throttle", "limit": 100}, 1, headers=auth(tk))
 check("防拼图拦截已留痕可筛", len(logs) >= 1, f"{len(logs)} 条")
 blk = audit_wait({"decision": "block", "limit": 100}, 1, headers=auth(tk))

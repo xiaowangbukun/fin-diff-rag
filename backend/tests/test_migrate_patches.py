@@ -58,6 +58,10 @@ def test_audit_row_hash_index_exists_on_clean_schema(db):
     ("users", "recovery_codes"),
     ("users", "oidc_subject"),
     ("approval_requests", "payload"),
+    ("document_versions", "original_key"),
+    ("document_versions", "original_sha256"),
+    ("document_versions", "original_size"),
+    ("document_versions", "original_stored_at"),
 ])
 def test_missing_column_is_backfilled(db, table, column):
     """防：老库升级时补列失败 → 启动崩溃或字段永久缺失（审计链直接断）。"""
@@ -114,11 +118,13 @@ def test_pg_ddl_is_idempotent_by_construction():
 
 def test_every_patch_column_exists_in_model():
     """防：白名单里登记了模型里不存在的列——DDL 能跑通但字段永远用不上。"""
-    from app.models import ApprovalRequest, AuditLog, Document, User
+    from app.models import (
+        ApprovalRequest, AuditLog, Document, DocumentVersion, User,
+    )
 
     models = {
         "audit_logs": AuditLog, "documents": Document, "users": User,
-        "approval_requests": ApprovalRequest,
+        "approval_requests": ApprovalRequest, "document_versions": DocumentVersion,
     }
     for table, column, _ddl in SCHEMA_PATCHES:
         assert column in models[table].__table__.columns, (

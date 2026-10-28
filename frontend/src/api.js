@@ -97,5 +97,16 @@ export const admin = {
   // 审批中心（密级 / 访问范围 / 新增授权 / 账号权限变更的双人复核）
   approvals: () => api.get('/admin/approvals'),
   approve: (id, reason = '') => api.post(`/admin/approvals/${id}/approve`, { reason }),
-  reject: (id, reason = '') => api.post(`/admin/approvals/${id}/reject`, { reason })
+  reject: (id, reason = '') => api.post(`/admin/approvals/${id}/reject`, { reason }),
+  // 原件审查（ORIGINAL_STORE_ENABLED 时才有原件）：台账 / 下载 / 完整性复核。
+  // 下载走 blob（服务端逐次留痕，不给预签名地址），失败原因见 409 的 detail。
+  originalMeta: (docId) => api.get(`/admin/documents/${docId}/original/meta`),
+  downloadOriginal: (docId, version) =>
+    api.get(`/admin/documents/${docId}/original`, {
+      params: version ? { version } : {},
+      responseType: 'blob'
+    }),
+  verifyOriginal: (docId, version) =>
+    api.post(`/admin/documents/${docId}/original/verify`, {},
+      { params: version ? { version } : {} })
 }

@@ -26,7 +26,7 @@ from .httpguard import (
     CORSGuardMiddleware, HTTPSRedirectMiddleware, SecurityHeadersMiddleware,
 )
 from .migrate import ensure_schema
-from .routers import admin, auth, chat, docs
+from .routers import admin, auth, chat, docs, originals
 from .seed import default_password_users, ensure_seed
 from .vindex import ensure_vector_index
 
@@ -146,7 +146,7 @@ app.add_exception_handler(Exception, internal_error_handler)
 # /api/v1 为现行契约；/api 为 deprecated 别名（至少下一个小版本后才可移除），
 # 双份路径在 OpenAPI 里重复出现是刻意行为。破坏性变更必须开 v2，
 # 不允许原地改 v1 语义。
-for r in (auth.router, docs.router, chat.router, admin.router):
+for r in (auth.router, docs.router, chat.router, admin.router, originals.router):
     app.include_router(r, prefix="/api/v1")
     app.include_router(r, prefix="/api")
 

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.orm import Session
 
+from .. import originals
 from ..approval import level_name as _lvl
 from ..approval import (
     grant_acl, request_acl_change, request_clearance_change,
@@ -140,15 +141,41 @@ async def upload_doc(
         acl_mode=acl_mode, tags=tags, created_by=user.username,
         parse_quality=quality,
     )
+    # 原件留存（默认关闭）：开启后原始字节写入对象存储，供人工审查对账。
+    # 放在入库之后：doc_id/version 已确定，对象键才是"版本可追溯"的；
+    # 严格模式下写不进去就回滚整次入库（下面补偿删除），不留"有文档没原件"
+    # 的半成品——那正是审查时最难发现的状态。
+    try:
+        orig = originals.save_original(
+            db, user=user, doc=doc, data=data, ext=ext,
+            request_ip=client_ip(request))
+    except originals.OriginalStoreError as e:
+        doc_id, doc_title = doc.id, doc.title
+        db.delete(doc)
+        db.execute(sa_delete(DocumentVersion).where(DocumentVersion.doc_id == doc_id))
+        db.commit()
+        write_log(db, user=user, action="upload", target_id=doc_id,
+                  target_label=doc_title, decision="deny",
+                  reason=f"原件留存失败，已回滚入库（ORIGINAL_STORE_STRICT=true）：{e}",
+                  ip=client_ip(request))
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "原件存储不可用，已拒绝入库（ORIGINAL_STORE_STRICT=true）")
     # P1-4：上传内容检出注入话术 → 审计 decision=flag（标记留痕，不拦截入库：
     # 文档本身可能是含攻击样本的演练材料，拦截会误伤正常归档）
     flagged = doc.inject_risk > 0
     write_log(db, user=user, action="upload", target_id=doc.id, target_label=doc.title,
               decision="flag" if flagged else "allow",
               reason=(f"文件 {filename} / 密级 {doc.clearance}"
-                      + (f" / 检出疑似提示注入 {doc.inject_risk} 处" if flagged else "")),
+                      + (f" / 检出疑似提示注入 {doc.inject_risk} 处" if flagged else "")
+                      + ("" if orig.get("stored") else
+                         " / 未留存原件" + (f"（{orig.get('reason')}）"
+                                          if orig.get("reason") else ""))),
               ip=client_ip(request))
-    return doc_out(db, doc)
+    out = doc_out(db, doc)
+    out["original"] = {k: orig[k] for k in
+                       ("enabled", "stored", "version", "sha256", "size", "reason")
+                       if k in orig}
+    return out
 
 
 @router.get("/{doc_id}")
@@ -282,6 +309,7 @@ async def reingest_doc(
 
     doc_type, quality, src = doc.doc_type, "ok", "手动更新"
     text = (content or "").strip()
+    data, ext = b"", ""
     if file is not None and (file.filename or "").strip():
         filename = file.filename or "upload.bin"
         ext = os.path.splitext(filename)[1].lstrip(".").lower()
@@ -308,6 +336,20 @@ async def reingest_doc(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
+    # 原件留存（重新入档）：只在新版本真的产生、且本次是文件上传时写一份。
+    # 这里刻意是**尽力而为**，与首次上传的严格模式不同口径——正文替换已经
+    # 落库，此时再因对象存储抖动回滚，会把调用方确认过的更新一起丢掉；
+    # 缺原件的事实由响应里的 original.stored=false 与审计 flag 显性暴露。
+    orig = {"enabled": bool(originals.cfg.ORIGINAL_STORE_ENABLED), "stored": False}
+    if created and data:
+        try:
+            orig = originals.save_original(
+                db, user=user, doc=doc, data=data, ext=ext,
+                request_ip=client_ip(request))
+        except originals.OriginalStoreError as e:
+            orig = {"enabled": True, "stored": False, "version": int(ver.version),
+                    "reason": f"{type(e).__name__}: {e}"[:200]}
+
     write_log(db, user=user, action="update", target_id=doc.id, target_label=doc.title,
               decision="flag" if doc.inject_risk > 0 else "allow",
               reason=(f"正文替换（{src}）→ 版本 v{ver.version}"
@@ -318,6 +360,9 @@ async def reingest_doc(
     out = doc_out(db, doc)
     out["version"] = ver.version
     out["version_created"] = created
+    out["original"] = {k: orig[k] for k in
+                       ("enabled", "stored", "version", "sha256", "size", "reason")
+                       if k in orig}
     return out
 
 
@@ -363,6 +408,13 @@ def list_versions(doc_id: str, request: Request,
                 "created_by": v.created_by,
                 "created_at": v.created_at.strftime("%Y-%m-%d %H:%M:%S"),
                 "is_current": v.content_hash == current,
+                # 原件留存状态（开关关闭时恒为 stored=false）：普通用户只能
+                # 看到"有没有"，下载原件走管理端审查接口（admin/originals）。
+                "original": {
+                    "stored": bool(v.original_key),
+                    "sha256": v.original_sha256,
+                    "size": int(v.original_size or 0),
+                },
             }
             for v in rows
         ],

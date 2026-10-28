@@ -79,6 +79,16 @@ def _secrets_provider_effective() -> str:
     return "none"
 
 
+def _minio_sdk_ready() -> bool:
+    """原件留存依赖的 S3 客户端是否可用（缺依赖时上传只会静默降级）。"""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("minio") is not None
+    except Exception:
+        return False
+
+
 def assess() -> list[Finding]:
     """计算当前进程的安全姿态。纯函数（只读配置），可在任意时刻重复调用。"""
     f: list[Finding] = []
@@ -212,6 +222,36 @@ def assess() -> list[Finding]:
         ok("CORS_ALLOW_ORIGINS", "跨域白名单已显式配置")
     else:
         info("CORS_ALLOW_ORIGINS", "未配置跨域来源（同源部署的正常形态）")
+
+    # ---------- 原件留存（上传原文是否在对象存储里另存一份）----------
+    # 关闭 = 隐私最小化默认（解析完即删原文），不是缺陷；开启则对象存储里多一份
+    # 与切片同等级的敏感数据，必须确认凭据、TLS、桶权限与备份范围，否则按 FAIL 拦。
+    if _v("ORIGINAL_STORE_ENABLED", False):
+        missing = [k for k in ("ORIGINAL_STORE_ENDPOINT",
+                               "ORIGINAL_STORE_ACCESS_KEY",
+                               "ORIGINAL_STORE_SECRET_KEY") if not _v(k, "")]
+        sdk_ready = _minio_sdk_ready()
+        if missing:
+            fail("ORIGINAL_STORE",
+                 f"原件留存已开启但缺少必填配置：{', '.join(missing)}——上传会在运行时失败",
+                 "补齐 ORIGINAL_STORE_ENDPOINT / ACCESS_KEY / SECRET_KEY（凭据走托管源），"
+                 "或关闭 ORIGINAL_STORE_ENABLED，回到「不留原件」口径")
+        elif not sdk_ready:
+            fail("ORIGINAL_STORE",
+                 "原件留存已开启但缺少 minio 客户端依赖——上传一律降级为「不留原件」",
+                 "pip install minio（或按 requirements.txt 安装），装好后重启服务")
+        elif not _v("ORIGINAL_STORE_SECURE", False):
+            warn("ORIGINAL_STORE",
+                 f"原件留存已开启但走明文 HTTP（{_v('ORIGINAL_STORE_ENDPOINT')}）："
+                 "原件与凭据在链路上可被嗅探",
+                 "对象存储开 TLS 后置 ORIGINAL_STORE_SECURE=true；仅本机测试可保留明文")
+        else:
+            ok("ORIGINAL_STORE",
+               f"原件留存已启用（桶 {_v('ORIGINAL_STORE_BUCKET')}，TLS，"
+               f"严格模式={bool(_v('ORIGINAL_STORE_STRICT', False))}）")
+    else:
+        info("ORIGINAL_STORE",
+             "原件不留存：上传原文解析完即删，库内只有切片文本（审查只能看切片）")
 
     # ---------- 数据与密钥 ----------
     provider = _secrets_provider_effective()

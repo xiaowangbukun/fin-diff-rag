@@ -77,6 +77,16 @@ SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     # （旧库默认 document，既有行为不变）。
     ("approval_requests", "subject_type",
      "ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS subject_type VARCHAR(16) DEFAULT 'document'"),
+    # 原件留存（ORIGINAL_STORE_ENABLED）：版本台账里记对象键/指纹/体积/写入时间。
+    # 旧库默认空串/0/NULL = "该版本没有原件"，与开关关闭时的语义一致。
+    ("document_versions", "original_key",
+     "ALTER TABLE document_versions ADD COLUMN IF NOT EXISTS original_key VARCHAR(512) DEFAULT ''"),
+    ("document_versions", "original_sha256",
+     "ALTER TABLE document_versions ADD COLUMN IF NOT EXISTS original_sha256 VARCHAR(64) DEFAULT ''"),
+    ("document_versions", "original_size",
+     "ALTER TABLE document_versions ADD COLUMN IF NOT EXISTS original_size INTEGER DEFAULT 0"),
+    ("document_versions", "original_stored_at",
+     "ALTER TABLE document_versions ADD COLUMN IF NOT EXISTS original_stored_at TIMESTAMP"),
 ]
 
 # P2-10 版本唯一约束的收口：历史库（无约束时期写入）可能已有同

@@ -150,6 +150,53 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <el-divider />
+      <div class="page-title">原件审查</div>
+      <div class="muted" style="margin-bottom:8px">
+        仅当服务端开启原件留存（ORIGINAL_STORE_ENABLED）时才有原件可查：上传原文会另存对象存储，
+        台账记录每个版本的 sha256 与体积。下载前服务端会重算哈希，与台账不一致即拒发（409）——
+        这正是"原件被替换/损坏"的检出点。密级不够的账号一律看不到（含管理员）。
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <el-input v-model="orig.docId" placeholder="文档 ID（从文档列表复制）" style="width:320px" />
+        <el-button @click="loadOriginals">查台账</el-button>
+        <el-button :disabled="!orig.rows.length" @click="verifyOriginals">完整性复核</el-button>
+        <span v-if="orig.checked" class="muted">核对时间：{{ orig.checked }}</span>
+      </div>
+      <el-table :data="orig.rows" size="small" empty-text="未查询或无版本记录">
+        <el-table-column label="版本" width="90">
+          <template #default="{ row }">
+            v{{ row.version }}
+            <el-tag v-if="row.is_current" size="small" type="success">当前</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="原件" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.stored ? 'success' : 'info'" size="small">
+              {{ row.stored ? '已留存' : '缺失' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="体积" width="100">
+          <template #default="{ row }">{{ row.size }} B</template>
+        </el-table-column>
+        <el-table-column label="sha256" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.sha256 || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="写入时间" width="170">
+          <template #default="{ row }">{{ row.stored_at || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110">
+          <template #default="{ row }">
+            <el-button link type="primary" :disabled="!row.stored"
+                       @click="downloadOriginal(row.version)">下载</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="orig.enabled === false" class="muted" style="margin-top:6px">
+        原件留存当前未启用：上传原文解析完即删，库内只有切片文本。
+      </div>
   </div>
 </template>
 
@@ -164,6 +211,59 @@ const roles = ref([])
 const levels = ref([])
 const board = ref([])
 const coalition = ref([])
+// 原件审查：台账只读展示；下载走服务端流式下发（前端不拼对象存储地址）
+const orig = reactive({ docId: '', rows: [], enabled: null, checked: '' })
+
+async function loadOriginals() {
+  const id = orig.docId.trim()
+  if (!id) { ElMessage.warning('请先填写文档 ID'); return }
+  try {
+    const res = await admin.originalMeta(id)
+    orig.rows = res.items || []
+    orig.enabled = res.enabled
+    orig.checked = res.checked_at || ''
+    if (!orig.rows.length) ElMessage.info('该文档没有版本记录')
+  } catch (e) {
+    orig.rows = []
+    ElMessage.error(e.response?.data?.detail || '查询失败')
+  }
+}
+
+async function verifyOriginals() {
+  try {
+    const res = await admin.verifyOriginal(orig.docId.trim())
+    orig.checked = res.checked_at || ''
+    if (res.ok) {
+      ElMessage.success(`原件完整（v${res.version}，${res.size} B，sha256 与台账一致）`)
+    } else {
+      ElMessage.error(`复核不一致：${res.reason || '原件与台账哈希不符'}`)
+    }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '复核失败')
+  }
+}
+
+async function downloadOriginal(version) {
+  const id = orig.docId.trim()
+  try {
+    const blob = await admin.downloadOriginal(id, version)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${id}_v${version}_original.bin`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('已下载（本次下载已记审计）')
+  } catch (e) {
+    // 409 = 台账有原件但取不到/哈希不符，属于必须人工介入的状态冲突。
+    // responseType=blob 时错误体也是 Blob，要读出来才能看到 detail。
+    let detail = e.response?.data?.detail
+    if (!detail && e.response?.data instanceof Blob) {
+      try { detail = JSON.parse(await e.response.data.text()).detail } catch { /* 非 JSON 错误体 */ }
+    }
+    ElMessage.error(detail || '下载失败')
+  }
+}
 
 async function loadBoard() {
   try { board.value = await admin.jigsaw() } catch (e) { /* 非管理员忽略 */ }

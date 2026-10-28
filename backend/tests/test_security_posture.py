@@ -20,7 +20,7 @@ from app import config, security_posture
 from app.main import app as real_app
 from app.models import User, new_id
 from app.security import hash_password
-from app.security_posture import FAIL, OK, WARN, assess, evaluate_and_report, summarize
+from app.security_posture import FAIL, INFO, OK, WARN, assess, evaluate_and_report, summarize
 
 API = "/api/v1"
 
@@ -197,6 +197,40 @@ def test_strict_mode_refuses_to_start_when_warn_remains(prod, capsys):
     err = capsys.readouterr().err
     assert "启动安全姿态自检" in err
     assert "METRICS_ENABLED" in err
+
+
+# ------------------------------------------------------------------ 原件留存
+
+
+def test_original_store_disabled_is_info(prod):
+    """关闭原件留存 = 隐私最小化默认，不是缺陷（INFO，不进严格模式拦截）。"""
+    prod.setattr(config, "ORIGINAL_STORE_ENABLED", False)
+    item = _by_key(assess())["ORIGINAL_STORE"]
+    assert item.level == INFO
+    assert "解析完即删" in item.detail
+
+
+def test_original_store_enabled_without_endpoint_is_fail(prod):
+    """开了却没配端点/凭据：上传会在运行时失败，必须启动期就拦。"""
+    prod.setattr(config, "ORIGINAL_STORE_ENABLED", True)
+    prod.setattr(config, "ORIGINAL_STORE_ENDPOINT", "")
+    prod.setattr(config, "ORIGINAL_STORE_ACCESS_KEY", "")
+    prod.setattr(config, "ORIGINAL_STORE_SECRET_KEY", "")
+    item = _by_key(assess())["ORIGINAL_STORE"]
+    assert item.level == FAIL
+    assert "ORIGINAL_STORE_ENDPOINT" in item.detail
+
+
+def test_original_store_plain_http_is_warn_but_tls_is_ok(prod):
+    prod.setattr(config, "ORIGINAL_STORE_ENABLED", True)
+    prod.setattr(config, "ORIGINAL_STORE_ENDPOINT", "127.0.0.1:9000")
+    prod.setattr(config, "ORIGINAL_STORE_ACCESS_KEY", "ak")
+    prod.setattr(config, "ORIGINAL_STORE_SECRET_KEY", "sk")
+    prod.setattr(config, "ORIGINAL_STORE_SECURE", False)
+    assert _by_key(assess())["ORIGINAL_STORE"].level == WARN
+
+    prod.setattr(config, "ORIGINAL_STORE_SECURE", True)
+    assert _by_key(assess())["ORIGINAL_STORE"].level == OK
 
 
 def test_strict_mode_starts_when_clean(prod):

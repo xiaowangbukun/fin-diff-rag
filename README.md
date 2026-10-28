@@ -1,11 +1,11 @@
-﻿﻿# 金融企业级 RAG 知识库（全链路权限防泄密）
+﻿﻿﻿﻿﻿﻿# 金融企业级 RAG 知识库（全链路权限防泄密）
 
 > 本项目基于 [GNU Affero 通用公共许可证 v3.0（AGPL-3.0-only）](LICENSE) 发布：可自由使用、修改、自建，**改造后对外提供网络服务须以 AGPL 开放对应源码**；商业闭源交付需另行取得商业授权（见「十二、许可证与商用」）。商业授权咨询：`1772441305@qq.com`
 
 面向金融机构的检索增强问答系统。核心不是"能不能答出来"，而是**该看的能看到、不该看的永远出不去**——从文档入库、切片、建索引、检索、上下文装配、生成到出库，每个环节都带权限校验与审计留痕。
 
 技术栈：FastAPI + Vue3 + PostgreSQL(pgvector) + OpenAI 兼容接口。
-存储为 **PostgreSQL + pgvector**（唯一存储后端，演示同样需要先起 PG）；Embedding 必须接真实服务（未配 `EMBED_API_KEY` 默认拒绝启动）；LLM 未配置时答案退化为原文抽取式回答，权限/检索/审计全部照常。
+业务与检索存储为 **PostgreSQL + pgvector**（唯一主存储，演示同样需要先起 PG）；原文留存是**可选**的辅助对象存储（MinIO/S3，默认关闭，见「三之二」第 15 条）；Embedding 必须接真实服务（未配 `EMBED_API_KEY` 默认拒绝启动）；LLM 未配置时答案退化为原文抽取式回答，权限/检索/审计全部照常。
 
 ---
 
@@ -129,7 +129,7 @@ fin-rag/
 ├── backend/
 │   ├── app/
 │   │   ├── config.py           全部环境变量可覆盖
-│   │   ├── db.py               PostgreSQL 引擎（pgvector，唯一存储后端）
+│   │   ├── db.py               PostgreSQL 引擎（pgvector 主存储；原件留存为可选对象存储）
 │   │   ├── models.py           部门/用户/文档/ACL/切片(含切片级密级)/暴露账本/审计/版本快照
 │   │   ├── security.py         JWT + 密码哈希
 │   │   ├── policy.py           权限引擎（核心）：密级/ACL/部门树/切片级/临时授权过期/就绪状态
@@ -153,14 +153,16 @@ fin-rag/
 │   │   ├── oidc.py             OIDC 客户端（discovery / JWKS / PKCE / 验签）
 │   │   ├── idp_sync.py         IdP claim → 本地角色/密级同步（白名单映射 + 撤权口径 + 基线溯源）
 │   │   ├── security_posture.py 启动安全姿态自检（实际生效开关 → OK/INFO/WARN/FAIL + strict 闸门）
+│   │   ├── blobstore.py        对象存储客户端（MinIO / S3 兼容：键规则 / 哈希元数据 / 私有桶）
+│   │   ├── originals.py        原件留存编排（写入 / 台账 / 取回校验 / 完整性复核）
 │   │   ├── vindex.py           pgvector 向量索引保障（HNSW）
 │   │   ├── httpguard.py        浏览器边界中间件（安全头 / HTTPS 跳转 / CORS 闸 / Host 白名单）
 │   │   ├── secrets_provider.py 密钥托管适配（file 密封卷 / http 网关，启用后不回落 .env）
 │   │   ├── seed.py             内置示例数据（含混合密级文档）
-│   │   └── routers/            auth / docs / chat / admin
+│   │   └── routers/            auth / docs / chat / admin / originals（原件审查，仅管理员）
 │   ├── alembic.ini             结构迁移配置（注释必须 ASCII：alembic 按 locale 读 ini）
-│   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）+ 0002_idp_clearance_provenance.py（IdP 密级同步溯源）
-│   ├── tests/                  pytest 单测体系（884 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
+│   ├── alembic/                env.py + versions/0001_baseline.py（与 create_all 等价且幂等）+ 0002_idp_clearance_provenance.py（IdP 密级同步溯源）+ 0003_original_store_ledger.py（原件留存台账）
+│   ├── tests/                  pytest 单测体系（905 例，每用例独立 schema 跑真实 PG；含 idp_stub.py 真 HTTP OIDC Provider）
 │   ├── smoke.py                端到端冒烟
 │   ├── http_check.py           真实服务 HTTP 验证（Bearer 模式基线）
 │   ├── cookie_mode_check.py    真实服务 HTTP 验证（Cookie + CSRF 模式）
@@ -322,6 +324,11 @@ npm run build    # 产出 dist/，后端会自动托管，直接访问 8000 即�
 
     `FAIL` 项（关掉即等于删掉一条防线，必须清零）：`SECURITY_HEADERS`、`JIGSAW_ENABLED`、`INTENT_ENABLED`、`FAIL_SECURE_ENABLED`、`AUDIT_APPEND_ONLY`、`JWT_SECRET`。
 
+15. **原件留存（可选，默认关闭）**：默认口径仍是"解析完即删原文，库内只有切片"。需要"上传原件另存 + 人工审查"时开 `ORIGINAL_STORE_ENABLED=true`，并配齐 `ORIGINAL_STORE_ENDPOINT`（`host:port`，本机 MinIO 例 `127.0.0.1:9000`）、`ORIGINAL_STORE_BUCKET`（默认 `finrag-originals`）、`ORIGINAL_STORE_ACCESS_KEY` / `ORIGINAL_STORE_SECRET_KEY`；云 S3 或 HTTPS 端点再置 `ORIGINAL_STORE_SECURE=true` 与 `ORIGINAL_STORE_REGION`。三条硬约束：① 对象键由服务端生成 `originals/<doc_id>/v<version>/original.<ext>`，**只用服务端字段、不含用户文件名**（不可猜、无路径穿越）；② sha256 同时落台账与对象元数据（`x-amz-meta-sha256`），取回时重算比对，不一致 **409 拒发**；③ 缺库不静默——SDK 为延迟导入，配置缺失/装不上在启动姿态自检里报 `FAIL`。
+    - 失败语义分两档：首次上传默认**宽容**（响应 `original.stored=false` + 审计 `store_original/flag`，入库继续），`ORIGINAL_STORE_STRICT=true` 时回滚整次入库并返回 503（不留"有文档没原件"的半成品）；重新入档（reingest）恒为尽力而为，因为正文替换已经落库。
+    - 审查口径：三个接口（台账/下载/复核）都要求**管理员 + 自身密级 ≥ 文档密级**（不够一律 404 掩码，真实原因只进审计）；**不签发预签名 URL**，一律服务端流式下发 + `Cache-Control: no-store`，每次下载/复核都写审计（`view_original` / `verify_original`）。控制台入口在「用户与权限 → 原件审查」。
+    - 边界：自建 S3/MinIO **不是 WORM**，拥有桶写权限的人仍可替换对象（但会被下载前哈希校验检出）；删除文档只删台账、不删桶内对象，孤儿对象需运维按前缀清理；取回体积上限 `ORIGINAL_STORE_GET_MAX_MB`（默认 32）。启动姿态自检会打 `ORIGINAL_STORE`：关闭=INFO、开启缺配置/缺 SDK=FAIL、明文 HTTP=WARN、TLS=OK。
+
 
 ## 三之三、离线安装（内网无外网环境）
 
@@ -387,7 +394,7 @@ pip install --no-index --find-links=wheels/ -r requirements-lock.txt
 ```bash
 cd backend
 python smoke.py            # 262 项断言，报告落在 backend/.smoke_report.txt
-python run_httpcheck.py    # 对真实运行中的服务做 49 项 HTTP 断言（Bearer 模式，需先启动服务）
+python run_httpcheck.py    # 对真实运行中的服务做 52 项 HTTP 断言（Bearer 模式，需先启动服务）
 # Cookie 会话模式（AUTH_COOKIE_MODE=true 启动）：令牌只走 HttpOnly Cookie + CSRF 双提交
 python cookie_mode_check.py   # 14 项断言（HttpOnly / SameSite / CSRF 缺失与错值均 403 / 登出清 Cookie）
 ```
@@ -424,7 +431,7 @@ python killport.py
 
 `.github/workflows/ci.yml` 在每次 push / PR 上跑两道闸，**不需要任何自建 runner 或外部服务**：
 
-- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（884 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
+- **backend**：起 `pgvector/pgvector:pg16` service（与生产同引擎同扩展），Python 3.13 + `pip install -r backend/requirements.txt`，`CREATE EXTENSION vector` 后跑 `pytest`（905 项）。`DATABASE_URL` 指向 service 容器；`EMBED_REQUIRE_API_KEY=false` + `EMBED_DIM=24` 让向量由测试替身供给，全程不外呼；`JWT_SECRET` 固定，`AUDIT_ANCHOR_EXTERNAL_FILE` 留空（只跑本地锚点路径，外置 sink 分支由 `test_audit_anchors.py` 里的真实 HTTP sink 用例覆盖）。
 - **frontend**：Node 20，`npm ci || npm install` 后 `vite build`，产物作为 artifact 保留 7 天。
 - 同一分支新推送会取消旧运行（`concurrency`）；测试只需 PostgreSQL，所以**自建 Gitea/GitLab CI 也照这个顺序抄**：起 PG 16 + pgvector → 建扩展 → 装 `requirements.txt` → `pytest` → `npm run build`。
 
@@ -432,7 +439,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 `http_check.py` 自带夹具重置（清空拼图账本 + 删除历次遗留的同名测试样本集），因此**可反复执行且结果稳定**——持久库上重复跑不会因累积的限流状态或重复样本稀释覆盖率而误报。
 
-`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **884/884**、smoke **262/262**、HTTP 端到端 **49/49**（真实向量服务；离线 fake 向量下仅"绝密附注语义召回"一条依赖向量质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。第五轮复核专项：**安全姿态自检（启动打印实际生效姿态 + `STRICT_SECURITY_POSTURE=true` 未清零即拒绝启动 + `GET /api/admin/security-posture` 只读接口）、审计链失败批次可续链/消费线程存活**。第六轮残留风险专项：**IdP 密级撤权口径（`OIDC_CLAIM_SYNC_MODE=authoritative` + 基线溯源迁移 `0002`）、跨账号合谋拼图检出（`GET /api/admin/jigsaw/coalition` + 管理端面板 + stats 计数）**。
+`smoke.py` 覆盖：文档可见性、越权直取 404 化、问答越权拦截、按密级脱敏、防幻觉拒答、审计留痕、授权参数校验；防拼图专项（神谕关闭、多轮累积分级限流、单轮上限、累计配额、重复提问豁免、短文档豁免、全篇直读 429、账本联动、风险榜、throttle 留痕、长周期闸与风险分隔离/人工复位）；第二轮新增的**意图网关三档、切片级密级（同文档跨密级）、Fail-Secure 降级与安全拒答、元数据封堵、双校验指标、权限缓存即时生效（提权不换 token / 部门树变更）、临时授权过期**；第三轮 P0 加固专项：**JWT 空密钥随机化与 ENFORCE 拒绝启动、密钥轮换过渡、未知密钥拒绝、审计哈希链（全链自洽/篡改检出/删行断档检出）、意图归一化（全角/零宽绕过例）、锚句相似度、正常业务不误伤**；PDF 解析加固（表格结构化 / 双栏顺序 / 乱码质检 / 扫描件 OCR 分级拒绝）；审批流与版本追溯；运维日报与安全指标（含 503 语义）；两处 P0 修复的增量断言（风险分累加失败不打成 500、已披露计数只增不减）。第四轮六条 P0 专项：**权限放宽双人复核（含"最后一名管理员"保护）与会话空闲超时/单端吊销/Cookie+CSRF、浏览器边界（安全头/HTTPS 跳转/CORS 闸/Host 白名单）、审计只追加触发器与行级全量外送、密钥托管适配器与 DB TLS 自检、Alembic 基线幂等与备份/恢复/归档脚本**。当前 pytest **905/905**、smoke **262/262**、HTTP 端到端 **52/52**（接真实向量服务时；离线 fake 向量为 **51/52**，唯一差异是"绝密用户问答可命中绝密附注"一条依赖向量语义质量）、Cookie 模式 **14/14** 全部通过（另有 OIDC / 恢复码两个活服务联调脚本，见上）。第五轮复核专项：**安全姿态自检（启动打印实际生效姿态 + `STRICT_SECURITY_POSTURE=true` 未清零即拒绝启动 + `GET /api/admin/security-posture` 只读接口）、审计链失败批次可续链/消费线程存活**。第六轮残留风险专项：**IdP 密级撤权口径（`OIDC_CLAIM_SYNC_MODE=authoritative` + 基线溯源迁移 `0002`）、跨账号合谋拼图检出（`GET /api/admin/jigsaw/coalition` + 管理端面板 + stats 计数）**。第七轮原件留存专项：**默认关闭的 S3/MinIO 原件留存（键不可猜 + sha256 双写 + 下载前重算比对）、管理端台账/下载/复核（管理员 + 密级闸门 + 每次留痕）、严格模式回滚与宽容模式 flag、迁移 `0003`**；单测用假对象存储（`FakeStore`），CI 不需要起 MinIO。
 
 ---
 
@@ -515,6 +522,9 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 | POST | `/api/admin/approvals/{id}/reject` | 驳回（必须填理由），审批单置 `rejected` |
 | GET | `/api/admin/jigsaw` | 拼图攻击风险榜（限管理员）：按累积披露比例排序的高危组合 |
 | GET | `/api/admin/jigsaw/coalition` | 跨账号合谋检出（限管理员，只读）：长窗口内多账号对同一文档的并集覆盖率、参与成员与条数；明细截断时 `approx=true` |
+| GET | `/api/admin/documents/{id}/original/meta` | 原件台账（限管理员，且自身密级 ≥ 文档密级，否则 404）：逐版本 `stored/key/sha256/size/stored_at`；`enabled` 反映开关当前是否开启，`bucket` 仅在开启时返回 |
+| GET | `/api/admin/documents/{id}/original` | 下载原件（`?version=` 可选，默认当前版本）：服务端流式下发、`Cache-Control: no-store`，响应头带 `X-Original-SHA256` / `X-Original-Version`；取不到或与台账哈希不一致返回 **409**；**不签发预签名 URL**，每次下发写 `view_original` 审计 |
+| POST | `/api/admin/documents/{id}/original/verify` | 完整性复核：重新取回并比对 sha256，返回 `ok` / `expected` / `actual` / `object_meta_sha256` / `reason`；结果写 `verify_original` 审计（不一致记 `flag`） |
 | GET | `/api/admin/stats` | 文档数、切片数、近 7 日拦截/限流/意图阻断降级次数、防拼图高危数与合谋检出数、运行模式 |
 | POST | `/api/admin/metrics/cleanup` | 清理过期运维日报 markdown（仅管理员，`?days=` 可覆盖保留天数，默认 `METRICS_RETENTION_DAYS`=90） |
 
@@ -524,10 +534,11 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 | 维度 | 边界 | 说明 |
 |---|---|---|
-| 存储引擎 | **PostgreSQL 14+ + pgvector（HNSW 索引）** | 唯一存储后端，全部容量数字以 PG 侧实测为准 |
+| 存储引擎 | **PostgreSQL 14+ + pgvector（HNSW 索引）** | 唯一主存储，业务/权限/检索/审计全部在 PG；容量数字以 PG 侧实测为准 |
 | 单文档 | ≤ 200 页 / ≤ 2MB | 超过建议拆分入库：单文档越大切片越多，拼图覆盖率闸（按已见切片占比裁决）与段落级密级探测的粒度都会变粗，防控精度随之下降 |
-| 单次上传 | ≤ 20MB | **硬限制**：上传端点强制校验，超限返回 413（`app/routers/docs.py`） |
+| 单次上传 | ≤ 20MB | **硬限制**：上传端点强制校验，超限返回 413（`app/routers/docs.py`）；开启原件留存时同一上限约束对象体积 |
 | 单库文档数 | ≤ 2000 篇 | 超过建议分库/分租户：检索延迟随库容量增长，HNSW 召回质量也受候选池规模影响 |
+| 原件对象（可选） | 取回上限 `ORIGINAL_STORE_GET_MAX_MB`（默认 32MB） | 仅开启 `ORIGINAL_STORE_ENABLED` 时存在；容量按"文档总大小 × 版本数 × 副本策略"规划。台账在 PG，**桶内对象要单独纳入备份/灾备**（`pg_backup.py` 不会备份对象存储） |
 
 除 20MB 外均为**规划口径**而非代码硬闸——按机构实际语料与硬件基线调整；调整时应同步复跑防拼图阈值（覆盖率闸是比例值，文档长度分布变化会影响误伤率）。
 
@@ -632,6 +643,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 - **OIDC 认证之外，IdP claim → 本地权限同步是可选且默认关闭的**（`app/idp_sync.py`）：`OIDC_CLAIM_SYNC=true` 后只认 `OIDC_ROLE_MAP` / `OIDC_CLEARANCE_MAP` 白名单映射（`fin_research:research` 这类"IdP 值:本地值"），claim 里没登记的值按 `OIDC_CLAIM_SYNC_UNKNOWN=ignore` 忽略或 `deny` 拒绝本次登录；**密级上限** `OIDC_CLAIM_SYNC_MAX_CLEARANCE`（默认 1=内部）保证 IdP 侧配错也不会把人抬到绝密；`admin` 需额外开关 `OIDC_CLAIM_SYNC_ALLOW_ADMIN`，本地已授予的 admin 不会被 claim 抹掉；**claim 缺失不等于收权**（IdP 漏配 claim 时保持本地角色），只有 claim 明确下发空列表才收回同步得来的角色。每次实际变更写一条 `action=idp_claim_sync` 审计。仍缺：部门 claim → 本地部门树同步、SAML 2.0。
 - **密级撤权口径可配**（`OIDC_CLAIM_SYNC_MODE`，角色同步不受影响）：默认 `union` 只升不降——IdP 侧把人调低密级时同步不动，撤权必须走本地审批；`authoritative` 允许 IdP 撤权，但**只回落到同步前的本地基线**（`users.idp_clearance_base` / `idp_clearance_synced`，迁移 `0002`）：本地管理员另行授予的更高密级不会被 IdP 一次误配抹掉，IdP 调低时也不至于卡在旧的高密级上。本地改过密级（当前值 ≠ max(基线, 上次同步值)）会把基线重置为当前值——"本地重新定调"优先于 IdP。适合入转调离由 IdP 驱动、离岗即收权的机构；前提是 IdP 侧 claim 准确且变更可审计。
 - **OIDC 只实现了授权码 + PKCE 的单点认证**：不支持 SAML 2.0；`OIDC_JIT_PROVISION` 默认关，即"先建号后认证"。IdP 的 discovery/JWKS 在进程内缓存 `OIDC_METADATA_TTL`（默认 3600 秒），IdP 轮换签名密钥后最长需等一个 TTL 才恢复（可重启进程立即刷新）。
+- **原件留存默认关闭，且自建 S3 ≠ WORM**（`app/blobstore.py` / `app/originals.py`）：`ORIGINAL_STORE_ENABLED=false`（默认）时行为与历史版本完全一致——原文解析完即删，库内只有切片文本。开启后原始字节进入 S3/MinIO，对象键由服务端生成（`originals/<doc_id>/v<version>/original.<ext>`，不含用户文件名）、sha256 双写（台账 + 对象元数据 `x-amz-meta-sha256`），下载前重算比对、不一致 **409 拒发**。边界：① 对象存储不是不可变存储，拥有桶写权限的人仍可替换对象（会被哈希校验检出；要证明"从未被改"需对象版本化 / WORM / 外部留存）；② **删除文档只删台账，不删桶内对象**（避免"删库即毁证"的取舍），孤儿对象需运维按前缀清理；③ 默认宽容模式（`ORIGINAL_STORE_STRICT=false`）下对象存储故障不阻断入库，只以 `original.stored=false` + 审计 `store_original/flag` 显性暴露；④ 读取必须走管理端审查接口（管理员 **且** 密级 ≥ 文档密级 + 逐次审计），**不提供预签名 URL**。
 - **高风险操作尚未额外验动态口令**（如导出/批量下载）：当前靠口令再验（改密、绑定/解绑 MFA、重新生成恢复码），MFA 步进验证仅用于登录，属后续增强。
 - 输入质量边界见「六之五」：所有超长/越界入参在边界拒绝（422/400/413），曾经的 PG DataError 500 与 `title[:255]` 静默截断已消除。
 
@@ -644,7 +656,7 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 | 数据 | 删除触发 | 保留期 | 为什么 |
 |---|---|---|---|
 | 文档行 / 切片（Chunk）/ 版本快照（DocumentVersion）/ 待批审批单（pending ApprovalRequest） | `DELETE /api/docs/{id}`（管理员或上传人，`docs.py:336-353` + `models.py:118` 级联） | 随文档物理删除，**无软删/回收站** | 物理删除是明确语义；要保留请改软删（见「八、已知限制」） |
-| 上传原件 | 无——**从不落盘** | 解析期间写 `DATA_DIR/tmp/`，`finally` 保证用后即删（含解析失败路径，`ingest.py:87-101`） | 库内只存提取文本，原文落盘会成倍放大泄露面。进程被强杀可能残留 tmp 文件，由部署侧定期清理 |
+| 上传原件 | 默认无——**从不落盘**；开启 `ORIGINAL_STORE_ENABLED` 后随对象存储策略保留 | 解析期间写 `DATA_DIR/tmp/`，`finally` 保证用后即删（含解析失败路径，`ingest.py:87-101`）；开启留存时原始字节写入 S3/MinIO，库内只存台账（`original_key/sha256/size/stored_at`）。**删除文档不删桶内对象**，孤儿对象由运维按前缀清理 | 默认不留存是"最小泄露面"的口径；开启后原件比切片更完整，读取一律走管理端审查接口（管理员 + 密级闸门 + 逐次审计），不发预签名 URL |
 | 审计日志（AuditLog） | 无自动删除，且 **DB 触发器拒绝 UPDATE/DELETE/TRUNCATE**（`AUDIT_APPEND_ONLY=true`） | 在线长期保留；离线归档 ≥6 个月（`scripts/audit_archive.py`，只导不删） | 哈希链 + 合规不可抵赖：删行会直接破坏链与断档检测（见「十」） |
 | 暴露账本（ExposureLedger） | 无自动删除 | 物理行不回收（`window_key` 只是逻辑过期，不影响历史行） | 防拼图安全证据。默认不加保留期；机构要保留策略请走 DB 侧归档，不要直接 DELETE |
 | 运维日报 markdown（`backend/reports/*.md`） | `POST /api/admin/metrics/cleanup`（仅管理员）或定时任务 | `METRICS_RETENTION_DAYS`，默认 90 天 | 纯运维产物：删掉不影响任何安全判定，只是看板回溯窗口变短 |
@@ -715,4 +727,4 @@ CI 的 Python 版本刻意与「二、部署」的基线一致（3.13），`requ
 
 > 非商业的开源使用（内部自建、学习、二次开发后仍以 AGPL 公开）无需任何授权，也不必发邮件；缺陷与改进建议走仓库 Issue 即可。
 
-第三方依赖的许可证见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)（含 MPL-2.0 的 certifi、LGPL-3.0 的 psycopg 等弱传染项）；这些许可与 AGPL-3.0 兼容，分发时随附其许可文本、不删改其声明即可。
+第三方依赖的许可证见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)（含 MPL-2.0 的 certifi、LGPL-3.0 的 psycopg 等弱传染项）；这些许可与 AGPL-3.0 兼容，分发时随附其许可文本、不删改其声明即可。原件留存用的 MinIO **客户端 SDK 是 Apache-2.0**（可随本项目分发）；**MinIO 服务端本体是 AGPL-3.0**，若你自建并对外提供服务，按其许可履行义务（本项目只通过 S3 协议调用它，不修改、不内嵌其代码）。

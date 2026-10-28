@@ -270,10 +270,14 @@ class ApprovalRequest(Base):
 class DocumentVersion(Base):
     """文档版本快照（P2-10）。
 
-    只存"哪个版本在何时以何密级存在"的元数据，**不存全文**——
+    只存"哪个版本在何时以何密级存在"的元数据，**本表不存全文**——
     content_hash 标识该版本的内容状态（同内容重复入库可识别），
-    提取文本只存在于切片表；上传原文从不落盘（仅在解析期间写
+    提取文本只存在于切片表；上传原文默认不落盘（仅在解析期间写
     临时文件、用后即删，见 ingest.parse_bytes），不放大泄露面。
+
+    例外是显式开启 `ORIGINAL_STORE_ENABLED` 后的**原件留存**：原始字节写进
+    对象存储（MinIO/S3），本表只记 original_key / sha256 / size 作为台账，
+    供人工审查与完整性复核。开关默认关闭，关闭时下面四列恒为空。
 
     (doc_id, version) 唯一：版本链的意义就在于"一个版本号对应且仅对应
     一次内容状态"，同号多行会让"当时看到哪版"的追溯出现歧义。
@@ -289,6 +293,16 @@ class DocumentVersion(Base):
     clearance: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # ---- 原件留存（ORIGINAL_STORE_ENABLED 时才有值，默认关闭）----
+    # original_key 为空 = 该版本没有留存原件（开关关闭 / 纯文本手动录入 /
+    # 写入失败但宽容放行）。审查端据此区分"没有原件"与"原件在对象存储里"，
+    # 不会把缺失当成已留存。sha256/size 是台账侧指纹，用于取回时比对；
+    # 对象侧元数据里另存一份，两边不一致即判定被替换。
+    original_key: Mapped[str] = mapped_column(String(512), default="")
+    original_sha256: Mapped[str] = mapped_column(String(64), default="")
+    original_size: Mapped[int] = mapped_column(Integer, default=0)
+    original_stored_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("doc_id", "version", name="uq_document_versions"),
