@@ -328,6 +328,7 @@ npm run build    # 产出 dist/，后端会自动托管，直接访问 8000 即�
     - 失败语义分两档：首次上传默认**宽容**（响应 `original.stored=false` + 审计 `store_original/flag`，入库继续），`ORIGINAL_STORE_STRICT=true` 时回滚整次入库并返回 503（不留"有文档没原件"的半成品）；重新入档（reingest）恒为尽力而为，因为正文替换已经落库。
     - 审查口径：三个接口（台账/下载/复核）都要求**管理员 + 自身密级 ≥ 文档密级**（不够一律 404 掩码，真实原因只进审计）；**不签发预签名 URL**，一律服务端流式下发 + `Cache-Control: no-store`，每次下载/复核都写审计（`view_original` / `verify_original`）。控制台入口在「用户与权限 → 原件审查」。
     - 边界：自建 S3/MinIO **不是 WORM**，拥有桶写权限的人仍可替换对象（但会被下载前哈希校验检出）；删除文档只删台账、不删桶内对象，孤儿对象需运维按前缀清理；取回体积上限 `ORIGINAL_STORE_GET_MAX_MB`（默认 32）。启动姿态自检会打 `ORIGINAL_STORE`：关闭=INFO、开启缺配置/缺 SDK=FAIL、明文 HTTP=WARN、TLS=OK。
+    - 部署要点（最小权限桶、TLS、**桶不随 `pg_backup.py` 备份**、先对象后 PG 的备份/恢复顺序、孤儿对象清理流程、切换桶的正确姿势）见 [`docs/BACKUP-RESTORE.md` §2b](docs/BACKUP-RESTORE.md)。
 
 
 ## 三之三、离线安装（内网无外网环境）

@@ -11,6 +11,7 @@
 | RTO（恢复耗时目标） | ≤ 2 小时 | 备份文件已在本地可读 + 恢复命令一条化 + 季度演练 |
 | 审计在线留存 | ≥ 6 个月 | 不删除在线审计行（见 §6）；容量按行数预估 |
 | 审计离线留存 | ≥ 6 个月（建议 12 个月） | 归档包（`scripts/audit_archive.py`）+ 外置 sink 副本 |
+| 原件对象留存（可选，默认关闭） | 与 PG 备份同窗口（≤ 24 小时） | 桶版本化 + 跨区域复制/镜像（§2b.3）；不随 `pg_backup.py` 自动备份 |
 
 结论口径：**没有做过一次恢复演练的备份，不算备份**。§5 的演练必须留记录。
 
@@ -39,6 +40,106 @@ python scripts/pg_backup.py backup --out /backup/finrag --keep-days 30
 存储介质）。**至少保留一份应用进程不可回写的副本**（与审计外置锚点同一
 思路：本地可写的备份挡不住"本机被控"）。
 
+## 2之二、原件留存（可选 S3/MinIO）的上线、备份与清理
+
+> 默认关闭：`ORIGINAL_STORE_ENABLED=false` 时原文解析完即删、库内只有切片，
+> 本节可整段跳过。开启后原件比切片**更完整**，应按"多一套需要单独备份、
+> 单独授权、单独审计的敏感存储"对待，安全等级不低于数据库本体。
+
+### 2b.1 开启前检查（缺一不可）
+
+1. **SDK**：`pip install -r backend/requirements.txt`（含 `minio>=7.2`，延迟导入）。
+2. **私有桶 + 最小权限**：预建 bucket（服务端也会 `ensure_bucket`），
+   **禁止匿名读**；应用账号只给 `GetObject / PutObject / HeadObject / BucketExists`，
+   **不给 `DeleteObject` / `DeleteBucket`**——业务路径不调用删除
+   （`blobstore.S3OriginalStore.remove()` 仅为运维/测试预留），撤掉删除权限
+   不影响功能，却能让应用无法"静默销毁证据"；对象清理走 §2b.6 的流程。
+3. **TLS**：云 S3 必须 `ORIGINAL_STORE_SECURE=true` 且端点走 443；
+   内网 MinIO 明文只允许测试环境（启动自检会打 `WARN`）。
+4. **凭据托管**：`ORIGINAL_STORE_ACCESS_KEY/SECRET_KEY` 走 `_secret()`，
+   `SECRETS_PROVIDER=file|http` 一旦启用即**不回落 .env**；与 DB 口令同级管理。
+5. **启动自检**：`ORIGINAL_STORE` 不得为 `FAIL`
+   （关闭=INFO / 缺配置缺 SDK=FAIL / 明文 HTTP=WARN / TLS=OK）。
+6. **体积口径**：单次上传硬限制 `MAX_UPLOAD_MB`（默认 20）；取回上限
+   `ORIGINAL_STORE_GET_MAX_MB`（默认 32）。不要把取回上限调到远大于上传限制
+   ——那只会让"能写不能读"的故障更晚被发现。
+
+### 2b.2 发布顺序与验收
+
+```bash
+# 0) 先备份（见 §2）
+python scripts/pg_backup.py backup --out /backup/finrag
+# 1) 结构迁移：0003 只加 4 个台账列，对旧数据无破坏
+cd backend && alembic upgrade head && alembic current
+# 2) 启动服务（配置齐全时启动自检 ORIGINAL_STORE 不得 FAIL）
+python run.py --port 8000
+```
+
+上传一份样本后逐项确认（任一不满足即回退配置）：
+
+1. 上传响应含 `original.stored=true`（容错模式下也可能是 `false` + 原因）；
+2. `GET /api/admin/documents/{id}/original/meta` → 200，`sha256/size` 有值；
+3. `POST /api/admin/documents/{id}/original/verify` → `ok=true`；
+4. 普通用户访问上述接口 → 403；密级不足的管理员 → 404（掩码）；
+5. 审计里能看到 `store_original` / `view_original` / `verify_original`。
+
+### 2b.3 备份：PG 与对象存储是两套，必须都做
+
+- `scripts/pg_backup.py` **只备份 PostgreSQL**。台账（`original_key/sha256/size`）
+  在 PG，原始字节在桶里：只备份 PG 会得到"台账说有原件、桶里取不到"的半套恢复。
+- 对象侧至少做到：**开启桶版本化** + 生命周期/保留策略；用跨区域复制
+  （`mc replicate` / 云厂商 CRR）或 `mc mirror --preserve` 同步到独立存储；
+  同样要求**至少一份应用进程不可回写**（与审计外置锚点同一思路）。
+- 一致性顺序：备份时**先对象、后 PG**（或同一维护窗口内）；恢复时
+  **先对象、后 PG**。两份产物都带时间戳并登记到变更台账。
+- 日常对账：定期抽样/全量拿台账 `original_sha256` 与对象重算哈希比对
+  （接口的逐文档 `verify` 是抽查口径；规模化时按台账遍历，发现不一致即按
+  "原件被替换"取证，不要自动覆盖台账）。
+
+### 2b.4 恢复演练补充（接 §5）
+
+- 恢复到新 PG 实例后 `doc_id` 不变，`original_key` 仍指向同一对象；
+  先确认对象存储可读，再逐篇 `POST .../original/verify`，要求 `ok=true`。
+- 若演练同时重建了对象存储：先按 `originals/<doc_id>/v<version>/` 结构恢复
+  对象，再恢复 PG，最后 verify。**任何哈希不一致都按"证据被替换"处理**
+  （下载返回 409 是正确行为，不是故障）。
+- 演练记录新增一栏"原件抽样 verify 结果（抽 N 篇 / ok 数）"。
+
+### 2b.5 回滚与开关切换
+
+- `0003` 只加列，代码回退后这些列被忽略，**不需要** `alembic downgrade`。
+- 关闭 `ORIGINAL_STORE_ENABLED` 只影响**新上传**，已存对象与台账保留；
+  读取接口会明确返回"未启用"，不会误发旧对象。
+- 切换 bucket / 端点：对象键结构不变，需先把旧桶对象按前缀迁到新桶再切配置；
+  否则旧版本台账指向的目标取不到 → 409（正确行为，但外观上像"原件丢失"）。
+- **禁止**把"删桶内对象"当作回滚手段（见 2b.6）。
+
+### 2b.6 孤儿对象清理（删除文档之后）
+
+删除文档**只删台账、不删桶内对象**（避免"删库即毁证"）。清理必须走流程：
+
+1. 导出 `documents.id` 清单（台账/报表）；
+2. 列桶内 `originals/` 前缀，按 `<doc_id>` 与清单比对，得到候选孤儿对象；
+3. 生成待删清单（对象名、大小、sha256）交复核，留工单/审计；
+4. 执行删除并记录对象数、字节数、时间、经办人；
+5. 仍在留存期内的对象**不删**——自建 S3 没有强制保留能力，需靠
+   bucket policy / Object Lock / 合规模式兜底。
+
+> 误删风险提示：对象键刻意不含用户文件名与标题，清理脚本只能凭 `doc_id`
+> 匹配。**不要凭"看起来像测试数据"直接删对象**。
+
+### 2b.7 安全边界（写进上线评审材料）
+
+- **自建 MinIO / S3 不是 WORM**：有桶写权限者可替换对象，哈希校验只能
+  "检出"、不能"阻止"。要"不可否认"需 Object Lock/合规模式、版本化 +
+  外部见证，或第三方 WORM 存储。
+- 桶凭据等价于"可改写全部原件"的高危权限：轮换、离职交接按密钥托管流程
+  执行，与 DB 口令同等对待。
+- 审查面仅管理员 **且** 自身密级 ≥ 文档密级；低于密级一律 404 掩码；
+  每次下载/复核都写审计；**不签发预签名 URL**（避免绕过审计与吊销）。
+- 台账行与对象都是敏感元数据：`original_key` 不外发给普通用户，
+  管理端展示也按最小披露（响应不含 key）。
+
 ## 3. 升级发布（结构变更）
 
 ```bash
@@ -62,7 +163,9 @@ cd ../backend && python run.py --port 8000
    `broken_rows=broken_links=seq_gaps=0`；
 3. `GET /api/admin/audit/anchor` → `external.enabled=true`（若已配置 sink），
    `records` 在增长、`bad_signature=0`；
-4. 冒烟：`python smoke.py`（端到端）、`python run_httpcheck.py`（HTTP 契约）。
+4. 冒烟：`python smoke.py`（端到端）、`python run_httpcheck.py`（HTTP 契约）；
+5. 若本次涉及原件留存：`GET /api/admin/security-posture` 的 `ORIGINAL_STORE`
+   不得为 `FAIL`，并按 §2b.2 上传样本跑 `meta` + `verify`。
 
 约定：**结构变更一律新增 alembic revision**，禁止改 `0001_baseline`；
 新 revision 的 `upgrade()` 必须幂等（老库可能已被 `ensure_schema` 改过）。
@@ -79,6 +182,9 @@ cd ../backend && python run.py --port 8000
 
 为什么默认不 downgrade：删表/删列的"回滚"会连同审计日志、审批记录一起
 销毁，合规上等价于销毁证据。`0001_baseline` 因此显式 `raise`。
+
+原件留存（可选）：`0003` 只加列，回退代码**不需要**回退结构；
+桶内对象不随任何回滚删除，开关与桶切换见 §2b.5。
 
 ## 5. 恢复演练（每季度一次，留记录）
 
@@ -123,7 +229,8 @@ python scripts/pg_backup.py restore \
 - `alembic_version` 与清单一致（证明结构与代码版本匹配）。
 
 3) 用演练库起一个临时服务实例（改 `DATABASE_URL` 指向 `finrag_drill`），
-   跑 `smoke.py`；4) 记录：备份文件、耗时、三项校验结果、经办人。
+   跑 `smoke.py`；4) 若开启过原件留存，按 §2b.4 抽样 `verify`（要求 `ok=true`）；
+   5) 记录：备份文件、耗时、三项校验结果、原件抽样结果、经办人。
    演练记录归档到变更管理台账（季度审计会查）。
 
 > 演练实例要用**独立的** `AUDIT_ANCHOR_EXTERNAL_FILE`（或留空关闭）：外置 sink
@@ -206,5 +313,11 @@ python scripts/pg_backup.py restore \
   SCA/渗透测试、SAML 2.0、部门 claim → 部门树同步、口令历史与定期改密。
 - PITR 若要做：开 `archive_mode=on` + `archive_command`/`archive_library`
   到独立存储，并把 RPO 目标从 24 小时改为分钟级；脚本与 runbook 需同步更新。
+- **原件留存（可选，默认关闭）**：自动化只覆盖 PG 侧的台账列迁移；桶内对象的
+  版本化/复制/生命周期、孤儿对象清理、留存期与 Object Lock 都属运维流程
+  （§2b），本项目不替你保证"对象一定还在"。自建 S3/MinIO **不是 WORM**：
+  哈希校验能检出替换，不能阻止替换。另：原件只在 `ORIGINAL_STORE_ENABLED`
+  开启后存在，关掉不会有"历史原件"凭空出现。
 - 本 runbook 的自动化只覆盖"备份/校验/恢复"与"归档导出"，**不覆盖**容量
-  预估、存储 HA、密钥托管服务（Vault/KMS）自身的高可用——这些属基础设施边界。
+  预估、存储 HA、密钥托管服务（Vault/KMS）自身的高可用、对象存储的高可用
+  ——这些属基础设施边界。
